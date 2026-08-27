@@ -113,7 +113,7 @@ export function createView(parent: Container, sim: Sim) {
       cells.clear();
       for (const c of sim.cells) {
         const hue = hueFor(anchor.get(c.cluster) ?? 0);
-        const alone = sim.clusterSizes[c.cluster] === 1 || sim.clusterSizes.length === sim.cells.length;
+        const alone = sim.clusterSizeOf[c.cluster] === 1;
         // a starving cell fades toward the ground; a full one is bright
         const fed = Math.max(0, Math.min(1, c.reserve / CFG.reserveMax));
         cells.circle(c.x, c.y, c.r);

@@ -41,6 +41,13 @@ export interface Cell {
   r: number;
   /** What it has in hand. Upkeep comes out of this; surplus makes a daughter. */
   reserve: number;
+  /** Propulsion this cell is applying, recomputed once a tick and added in every
+      substep. Charged for in metabolise. */
+  px: number;
+  py: number;
+  /** How many cells are touching it, counted during the force pass. Free there,
+      and it is the sense that tells an interior cell it is interior. */
+  crowding: number;
   /** Which connected component it is in this tick. Derived, never authoritative. */
   cluster: number;
   /** Lineage and colour only — never read by the physics. */
@@ -73,8 +80,12 @@ export interface Sim {
   deathsThisTick: number;
   totalDeaths: number;
   birthsThisTick: number;
-  /** Derived each tick: sizes of every connected component, descending. */
+  /** Derived each tick: sizes of every connected component, descending. For
+      reporting only — it is SORTED, so it cannot be indexed by a cell's cluster
+      id. Use clusterSizeOf for that. */
   clusterSizes: number[];
+  /** Size of each cluster, indexed by cluster id as cells carry it. */
+  clusterSizeOf: number[];
 }
 
 /* ── the field ──────────────────────────────────────────────────────────────
@@ -113,6 +124,17 @@ export function substrateAt(sim: Sim, x: number, y: number): number {
     }
   }
   return v;
+}
+
+/** Substrate gradient, by central difference over one patch of the same bilinear
+    field a cell draws from. This is the only thing a cell senses about the world
+    beyond its own body — and it is a READING, not an instruction. */
+export function gradientAt(sim: Sim, x: number, y: number): { gx: number; gy: number } {
+  const h = CFG.fieldCell;
+  return {
+    gx: (substrateAt(sim, x + h, y) - substrateAt(sim, x - h, y)) / (2 * h),
+    gy: (substrateAt(sim, x, y + h) - substrateAt(sim, x, y - h)) / (2 * h),
+  };
 }
 
 /** Take `amount` from around (x,y), spread over the four nearest patches by the
@@ -170,6 +192,7 @@ export function createSim(seed: string): Sim {
     totalDeaths: 0,
     birthsThisTick: 0,
     clusterSizes: [],
+    clusterSizeOf: [],
   };
   recomputeClusters(sim);
   return sim;
@@ -181,6 +204,9 @@ function makeCell(x: number, y: number, birthTick: number, reserve = CFG.reserve
     y,
     fx: 0,
     fy: 0,
+    px: 0,
+    py: 0,
+    crowding: 0,
     r: CFG.cellRadius,
     reserve,
     cluster: -1,
@@ -200,6 +226,8 @@ export function tick(sim: Sim, dt: number): void {
   sim.deathsThisTick = 0;
   sim.birthsThisTick = 0;
 
+  sense(sim);
+
   for (let s = 0; s < CFG.substeps; s++) {
     accumulateForces(sim);
     integrate(sim);
@@ -213,6 +241,26 @@ export function tick(sim: Sim, dt: number): void {
   recomputeClusters(sim);
 }
 
+/* ── rule 5: sensing ────────────────────────────────────────────────────────
+   Read the world, decide a push. Once per tick, not once per substep — the
+   reading does not change inside a tick and re-sampling it four times would
+   just be four times the cost for the same answer.
+
+   Nothing here says "go where the food is". It says: push along the gradient by
+   this much. A negative strength would push the other way and everything would
+   starve, and no rule in this file would object. */
+function sense(sim: Sim): void {
+  if (CFG.taxis === 0) {
+    for (const c of sim.cells) { c.px = 0; c.py = 0; }
+    return;
+  }
+  for (const c of sim.cells) {
+    const g = gradientAt(sim, c.x, c.y);
+    c.px = CFG.taxis * g.gx;
+    c.py = CFG.taxis * g.gy;
+  }
+}
+
 /* ── forces ─────────────────────────────────────────────────────────────────
    Two, and neither knows what a cluster is. Repulsion because cells are solid;
    a bond spring between parent and daughter whose tension is what eventually
@@ -221,8 +269,11 @@ function accumulateForces(sim: Sim): void {
   const cells = sim.cells;
   for (let i = 0; i < cells.length; i++) {
     const c = cells[i]!;
-    c.fx = 0;
-    c.fy = 0;
+    // propulsion is a force like any other, so it argues with repulsion and with
+    // whatever a cell is bonded to rather than overriding them
+    c.fx = c.px;
+    c.fy = c.py;
+    c.crowding = 0;
   }
 
   // spatial hash so this stays O(n) rather than O(n^2)
@@ -252,6 +303,18 @@ function accumulateForces(sim: Sim): void {
           const dy = cj.y - ci.y;
           const d2 = dx * dx + dy * dy;
           const rest = ci.r + cj.r;
+
+          /* Crowding counts NEIGHBOURS, not overlaps. A bonded pair rests at
+             exactly the contact distance and so never overlaps at all — counting
+             only overlaps made a cell inside a cluster read as less crowded than
+             a loose cell in a crush, which is backwards for the one sense that is
+             supposed to tell an interior cell that it is interior. */
+          const near = rest * 1.3;
+          if (d2 < near * near) {
+            ci.crowding++;
+            cj.crowding++;
+          }
+
           if (d2 >= rest * rest || d2 === 0) continue;
           const d = Math.sqrt(d2);
           const f = CFG.repulsion * (rest - d);
@@ -330,7 +393,7 @@ function metabolise(sim: Sim): void {
   for (const c of sim.cells) {
     const want = Math.min(CFG.drawRate, CFG.reserveMax - c.reserve);
     if (want > 0) c.reserve += drawFrom(sim, c.x, c.y, want);
-    c.reserve -= CFG.upkeep;
+    c.reserve -= CFG.upkeep + CFG.moveCost * Math.hypot(c.px, c.py);
     if (c.reserve <= 0) {
       c.alive = false;
       sim.deathsThisTick++;
@@ -402,9 +465,22 @@ function regenerate(sim: Sim): void {
     }
   }
 
+  /* LOGISTIC, not proportional-to-shortfall. The difference decides whether the
+     world can have deserts in it.
+
+     Growing back by a fraction of the SHORTFALL means bare ground regenerates
+     FASTEST of all — so nothing can ever stay stripped, every grazed patch
+     springs back at full speed, and the whole world settles into one uniformly
+     cropped flux. Measured: by tick 40,000 all 1600 patches were a single bare
+     region at 0.2% of full.
+
+     Substrate is growing stuff, and growing stuff grows from what is already
+     there. Logistically, bare ground is nearly DEAD ground: it comes back only
+     as fast as its neighbours can seed it, which is what diffusion is for. That
+     is what lets a place be ruined rather than merely used. */
   for (let i = 0; i < f.length; i++) {
     const v = f[i]!;
-    if (v < max) f[i] = v + (max - v) * r;
+    if (v > 0 && v < max) f[i] = v + r * v * (1 - v / max);
   }
 }
 
@@ -495,8 +571,8 @@ export function recomputeClusters(sim: Sim): void {
     sizes.push(size);
     id++;
   }
-  sizes.sort((a, b) => b - a);
-  sim.clusterSizes = sizes;
+  sim.clusterSizeOf = sizes;
+  sim.clusterSizes = sizes.slice().sort((a, b) => b - a);
 }
 
 /* ── readouts ───────────────────────────────────────────────────────────────
@@ -512,9 +588,19 @@ export interface Stats {
   totalDeaths: number;
   /** Mean substrate across the whole field. How spoiled the world is. */
   fieldMean: number;
-  /** Spread of substrate — how PATCHY the world has become. Zero at the start,
-      so anything above zero was made by the cells. */
+  /** Spread of substrate. Zero at the start, so anything above it was made by
+      the cells — but it measures CONTRAST, not structure: a world stripped on
+      one side and untouched on the other scores as high as one full of patches.
+      Kept because it is the honest "did they change anything" number; use the
+      two below to ask whether what they made has any grain to it. */
   fieldSd: number;
+  /** Connected regions of spoiled ground. THIS is patchiness: it tells apart a
+      hundred grazed clearings from one continent-sized bare patch, which sd
+      cannot. */
+  patchCount: number;
+  /** Mean size of those regions, in field cells. Rising while patchCount falls
+      is the signature of a world being grazed uniformly bare. */
+  meanPatchSize: number;
   meanReserve: number;
 }
 
@@ -530,6 +616,33 @@ export function stats(sim: Sim): Stats {
     const d = f[i]! - mean;
     vs += d * d;
   }
+  /* Connected components of spoiled ground, four-way. Threshold at half full:
+     it wants to be well inside the range the field actually produces, not at an
+     extreme where everything or nothing qualifies. */
+  const n = CFG.fieldSize;
+  const spoiled = CFG.fieldMax * 0.5;
+  const seen = new Uint8Array(f.length);
+  const stack: number[] = [];
+  let patchCount = 0;
+  let patchCells = 0;
+  for (let i = 0; i < f.length; i++) {
+    if (seen[i] || f[i]! >= spoiled) continue;
+    patchCount++;
+    stack.length = 0;
+    stack.push(i);
+    seen[i] = 1;
+    while (stack.length) {
+      const v = stack.pop()!;
+      patchCells++;
+      const vx = v % n;
+      const vy = (v / n) | 0;
+      if (vx > 0 && !seen[v - 1] && f[v - 1]! < spoiled) { seen[v - 1] = 1; stack.push(v - 1); }
+      if (vx < n - 1 && !seen[v + 1] && f[v + 1]! < spoiled) { seen[v + 1] = 1; stack.push(v + 1); }
+      if (vy > 0 && !seen[v - n] && f[v - n]! < spoiled) { seen[v - n] = 1; stack.push(v - n); }
+      if (vy < n - 1 && !seen[v + n] && f[v + n]! < spoiled) { seen[v + n] = 1; stack.push(v + n); }
+    }
+  }
+
   return {
     cells: sim.cells.length,
     clusters: sizes.length,
@@ -540,6 +653,8 @@ export function stats(sim: Sim): Stats {
     totalDeaths: sim.totalDeaths,
     fieldMean: mean,
     fieldSd: f.length ? Math.sqrt(vs / f.length) : 0,
+    patchCount,
+    meanPatchSize: patchCount ? patchCells / patchCount : 0,
     meanReserve: sim.cells.length ? sim.cells.reduce((a, c) => a + c.reserve, 0) / sim.cells.length : 0,
   };
 }
@@ -566,4 +681,5 @@ export function resetSim(sim: Sim, seed = sim.seed): void {
   sim.totalDeaths = 0;
   sim.birthsThisTick = 0;
   sim.clusterSizes = fresh.clusterSizes;
+  sim.clusterSizeOf = fresh.clusterSizeOf;
 }

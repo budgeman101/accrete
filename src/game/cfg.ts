@@ -85,17 +85,26 @@ export const CFG = {
   /** Substrate a full field cell holds. Stock, not rate: this is how long a
       patch can carry a cell before regeneration is all there is. */
   fieldMax: 20,
-  /** THE world constant: how fast the world forgets. The layer regenerates
-      toward fieldMax by this fraction of the shortfall each tick. Too fast and
-      nothing is ever at risk; too slow and everything starves. Marks — depletion
-      now, emissions later — last about 1/R ticks. */
-  regen: 0.0016,
+  /** THE world constant: how fast the world forgets. Logistic — substrate grows
+      from what is already there, so bare ground is nearly dead ground and comes
+      back only as its neighbours seed it. Too fast and nothing is ever at risk;
+      too slow and everything starves.
+
+      MEASURED, with diffuse at 0.002: 0.004 gives 50 depleted patches averaging
+      10 field cells on a healthy field; 0.015 gives 33 patches averaging 26 and
+      half again the population. Held at 0.015. Patch count is STABLE between
+      tick 10,000 and 30,000 — the structure is sustained, not a transient. */
+  regen: 0.015,
   /** How much of the difference with its neighbours a field cell takes on each
       tick. Substrate spreads sideways, which does three things: it softens the
       grid so depletion reads as ground rather than as tiles, it refills a
       spoiled patch partly from its neighbours (so an isolated colony does better
       than a crowded one, with nothing written to say so), and it is the same
       pass the signal channels will need later.
+
+      It carries more weight since regrowth went logistic: bare ground cannot
+      regrow from nothing, so diffusion from the edges is the ONLY way a ruined
+      patch ever comes back.
 
       MEASURED, and the value is small for a reason: diffusion and local scarcity
       pull against each other. At 0.09 the world is effectively well-mixed —
@@ -118,6 +127,37 @@ export const CFG = {
   /** Reserve at which a cell divides, as a fraction of reserveMax. The parent
       and daughter split what the parent had. Above 1 nothing ever buds. */
   budThreshold: 0.92,
+
+  // ---- rule 5: sensing, and the one verb that costs ----
+  /* A cell reads the substrate gradient where it stands and pushes along it.
+     That is chemotaxis, which is what a real single cell does with no brain at
+     all. Here it is a fixed policy with a strength dial; in stage 4 the policy
+     becomes a function the genome computes, and a genome is free to evolve one
+     that runs DOWN the gradient and starves. Nothing knows which way is good. */
+
+  /** Propulsion force per unit of substrate gradient. Zero = nothing moves,
+      which is the control this stage is measured against.
+
+      MEASURED, and there is a phase transition just above this. Movement raises
+      the sustainable population (840 -> 1177 here, and up to ~1920 if pushed),
+      but past about 20 the cells become perfect foragers: every gradient is
+      found and eaten, patchiness collapses from 9 to 0.1, and the world is
+      stripped uniformly bare. Held at 8, where the population gains 40% and
+      patchiness is HIGHER than with no movement at all (9.19 against 8.97) —
+      cells concentrating on rich ground deepens the contrast. */
+  taxis: 8,
+  /** Reserve spent per tick per unit of propulsion force. Movement is paid out
+      of the SAME budget as existing, so searching competes with enduring and no
+      penalty had to be written to make it a trade-off.
+
+      This one matters more than its size suggests. At 3% of upkeep it barely
+      shows here, but it is what stops strong taxis running away: at taxis 40 it
+      is the difference between patchiness 0.32 and 5.55, and at taxis 220 it is
+      the difference between a stripped world and extinction. There is a real
+      OPTIMUM in movement — too little and too much both cost population — which
+      is what will give this a shape to find once it becomes a gene rather than a
+      ramp to run to the ceiling. */
+  moveCost: 0.002,
 
   // ---- the run ----
   /** Hard ceiling so a runaway can't hang the tab. Not a biological limit. */

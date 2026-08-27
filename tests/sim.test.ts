@@ -8,7 +8,7 @@
    Run: npm test */
 
 import { afterEach, describe, expect, it } from 'vitest';
-import { createSim, resetSim, stats, substrateAt, tick, type Sim } from '../src/game/sim.js';
+import { createSim, gradientAt, resetSim, stats, substrateAt, tick, type Sim } from '../src/game/sim.js';
 import { CFG } from '../src/game/cfg.js';
 
 /* A smaller world than the real one: these tests need thousands of ticks. Set
@@ -94,6 +94,31 @@ describe('rule 1 — the world keeps what agents do to it', () => {
     expect(stats(sim).fieldSd).toBeGreaterThan(1);
   });
 
+  it('and it is real STRUCTURE, not one big bare region', () => {
+    /* sd measures contrast and cannot tell a patchwork from a world stripped
+       down one side. This is the test that caught that, and the one that caught
+       proportional-to-shortfall regrowth forbidding deserts entirely. */
+    const s = stats(run('brimtoveharn', 9000));
+    expect(s.patchCount).toBeGreaterThan(5);
+    expect(s.meanPatchSize).toBeLessThan(CFG.fieldSize ** 2 * 0.25);
+  });
+
+  it('the structure is SUSTAINED, not a colonisation transient', () => {
+    const early = stats(run('brimtoveharn', 9000)).patchCount;
+    const late = stats(run('brimtoveharn', 20000)).patchCount;
+    expect(late).toBeGreaterThan(early * 0.5);
+  });
+
+  it('bare ground cannot regrow from nothing — only its neighbours seed it', () => {
+    CFG.diffuse = 0;
+    const sim = createSim('brimtoveharn');
+    sim.cells.length = 0;
+    sim.bonds.length = 0;
+    sim.field.fill(0);
+    for (let i = 0; i < 2000; i++) tick(sim, 1 / 60);
+    expect(stats(sim).fieldMean).toBe(0);
+  });
+
   it('cells spoil the ground they stand on', () => {
     const sim = run('brimtoveharn', 4500);
     const under = sim.cells.map((c) => substrateAt(sim, c.x, c.y));
@@ -140,6 +165,61 @@ describe('rule 2 — separation can fail, and crowding tears the result apart', 
     CFG.stickiness = 1;
     const strong = stats(run('brimtoveharn', 4500)).meanClusterSize;
     expect(strong).toBeGreaterThan(weak);
+  });
+});
+
+/* ── rule 5 ─────────────────────────────────────────────────────────────── */
+
+describe('rule 5 — a cell senses the world and pushes along what it reads', () => {
+  it('with taxis 0 nothing moves under its own power', () => {
+    CFG.taxis = 0;
+    const sim = run('brimtoveharn', 500);
+    expect(sim.cells.every((c) => c.px === 0 && c.py === 0)).toBe(true);
+  });
+
+  it('a cell climbs a gradient — and it is a reading, not an instruction', () => {
+    const sim = createSim('brimtoveharn');
+    // a clean ramp, rising to the east, and one cell sitting in the middle of it
+    const n = CFG.fieldSize;
+    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) sim.field[y * n + x] = (x / n) * CFG.fieldMax;
+    sim.cells.length = 0;
+    sim.bonds.length = 0;
+    sim.cells.push({ ...structuredClone(createSim('x').cells[0]!), x: 0, y: 0, reserve: CFG.reserveMax });
+    const g = gradientAt(sim, 0, 0);
+    expect(g.gx).toBeGreaterThan(0); // the reading itself points up the ramp
+    const before = sim.cells[0]!.x;
+    for (let i = 0; i < 300; i++) tick(sim, 1 / 60);
+    expect(sim.cells[0]!.x).toBeGreaterThan(before);
+  });
+
+  it('MOVEMENT RAISES THE CARRYING CAPACITY — the prediction from stage 2', () => {
+    CFG.taxis = 0;
+    const still = run('brimtoveharn', 6000).cells.length;
+    Object.assign(CFG, BASE);
+    const moving = run('brimtoveharn', 6000).cells.length;
+    expect(moving).toBeGreaterThan(still * 1.15);
+  });
+
+  it('movement is PAID FOR — priced high enough, it is a net loss', () => {
+    CFG.moveCost = 0.02;
+    const dear = run('brimtoveharn', 6000).cells.length;
+    Object.assign(CFG, BASE);
+    const cheap = run('brimtoveharn', 6000).cells.length;
+    expect(dear).toBeLessThan(cheap);
+  });
+
+  it('and the world stays patchy at this strength — foraging has not flattened it', () => {
+    expect(stats(run('brimtoveharn', 4500)).fieldSd).toBeGreaterThan(4);
+  });
+
+  it('crowding is counted, and interior cells read higher than lone ones', () => {
+    const sim = run('brimtoveharn', 4500);
+    const inCluster = sim.cells.filter((c) => sim.clusterSizeOf[c.cluster]! > 1);
+    const alone = sim.cells.filter((c) => sim.clusterSizeOf[c.cluster] === 1);
+    if (inCluster.length && alone.length) {
+      const m = (a: typeof sim.cells) => a.reduce((s, c) => s + c.crowding, 0) / a.length;
+      expect(m(inCluster)).toBeGreaterThan(m(alone));
+    }
   });
 });
 
