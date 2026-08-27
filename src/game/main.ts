@@ -172,7 +172,7 @@ async function boot() {
     let sim: Sim;
     let view: View;
     let cam: ReturnType<typeof createCamera>;
-    let hud: { rCells: any; rClusters: any; rLargest: any; mLargest: any };
+    let hud: { rCells: any; rClusters: any; rLargest: any; rDeaths: any; mPatch: any };
 
     return {
       // getters, so DBG.sim reaches the CURRENT scene's state
@@ -201,12 +201,16 @@ async function boot() {
         const rCells = readout({ label: 'Cells', value: '0' });
         const rClusters = readout({ label: 'Clusters', value: '0' });
         const rLargest = readout({ label: 'Largest', value: '0' });
+        const rDeaths = readout({ label: 'Died', value: '0' });
         const rSeed = readout({ label: 'Seed', value: seed });
         const topLeft = overlay('top-left', { row: true });
-        topLeft.append(rCells, rClusters, rLargest, rSeed);
+        topLeft.append(rCells, rClusters, rLargest, rDeaths, rSeed);
 
-        const mLargest = meter({ label: 'Largest / cells', value: 0 });
-        const side = panel({ title: null, children: [mLargest] });
+        /* Patchiness starts at exactly zero and everything above it was made by
+           the cells — so this meter is the one readout that shows a rule
+           producing something nobody supplied. */
+        const mPatch = meter({ label: 'Patchiness (made by them)', value: 0 });
+        const side = panel({ title: null, children: [mPatch] });
         side.style.width = '190px';
         const bottomLeft = overlay('bottom-left');
         bottomLeft.append(side);
@@ -219,7 +223,7 @@ async function boot() {
         );
 
         ctx.el.append(topLeft, bottomLeft, topRight);
-        hud = { rCells, rClusters, rLargest, mLargest };
+        hud = { rCells, rClusters, rLargest, rDeaths, mPatch };
       },
 
       update(dt: number) {
@@ -245,7 +249,9 @@ async function boot() {
         hud.rCells.set(s.cells);
         hud.rClusters.set(s.clusters);
         hud.rLargest.set(s.largest);
-        hud.mLargest.set(s.cells ? s.largest / s.cells : 0);
+        hud.rDeaths.set(s.totalDeaths);
+        // sd of a uniform-ish field tops out well under a quarter of full
+        hud.mPatch.set(Math.min(1, s.fieldSd / (CFG.fieldMax * 0.25)));
       },
 
       /** Reachable as DBG.reset() — a known state is what makes stepping reproducible. */
@@ -322,6 +328,8 @@ async function boot() {
         clusters: sim?.clusterSizes.length ?? 0,
         largest: sim?.clusterSizes[0] ?? 0,
         fractures: sim?.totalFractures ?? 0,
+        deaths: sim?.totalDeaths ?? 0,
+        fieldSd: sim ? +stats(sim).fieldSd.toFixed(3) : 0,
         seed: sim?.seed ?? '',
       };
     },

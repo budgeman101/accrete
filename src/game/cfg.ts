@@ -21,13 +21,11 @@ export const CFG = {
   // ---- the cell ----
   /** Radius of one cell, in world units. Everything else is scaled to this. */
   cellRadius: 5,
-  /** Ticks between one cell budding and the next. Lower = faster growth. Slower
-      growth lets a cluster relax between buds and reach a larger size before the
-      packing tears it (13 at 300 versus 9 at 90). */
-  growthInterval: 300,
-  /** Jitter on the growth clock, as a fraction — without it every cell in a
-      cluster buds on the same tick and the whole thing pulses. */
-  growthJitter: 0.35,
+  /* Growth is no longer a clock. A cell buds when it has SURPLUS — see
+     budThreshold below. Nothing schedules division; it is what happens when a
+     cell has more than it needs, which means the substrate under it decides how
+     fast it grows, and the jitter that a timer needed comes free from the fact
+     that no two places are equally rich. */
 
   // ---- the physics ----
   /** Overdamped: position += force * mobility. No inertia — cells live in
@@ -68,12 +66,68 @@ export const CFG = {
       band, not a cell junction, and the cluster sizes it bought were not real. */
   bondStrengthMax: 400,
 
+  // ---- rule 1 + rule 3: the world layer, and the upkeep drawn from it ----
+  /* These are ONE mechanism. The layer holds what the world has and remembers
+     what has been taken from it; upkeep is a withdrawal from that same layer.
+     There is no separate energy stat anywhere. */
+
+  /** Field cell size in world units. DELIBERATELY COARSER THAN A CELL (which is
+      10 across). Carrying capacity works out to fieldCells x (fieldMax x regen /
+      upkeep), and sustaining a lone cell needs that ratio at or above 1 — so
+      capacity can never fall below the number of field cells. With a field as
+      fine as a cell that forces a world packed shoulder to shoulder. A patch
+      three cells wide gives room to be sparse. */
+  fieldCell: 30,
+  /** Field width and height in field cells. Outside it there is no substrate at
+      all, so the world is bounded by starvation rather than by a wall — nothing
+      needs a special case for the edge. */
+  fieldSize: 40,
+  /** Substrate a full field cell holds. Stock, not rate: this is how long a
+      patch can carry a cell before regeneration is all there is. */
+  fieldMax: 20,
+  /** THE world constant: how fast the world forgets. The layer regenerates
+      toward fieldMax by this fraction of the shortfall each tick. Too fast and
+      nothing is ever at risk; too slow and everything starves. Marks — depletion
+      now, emissions later — last about 1/R ticks. */
+  regen: 0.0016,
+  /** How much of the difference with its neighbours a field cell takes on each
+      tick. Substrate spreads sideways, which does three things: it softens the
+      grid so depletion reads as ground rather than as tiles, it refills a
+      spoiled patch partly from its neighbours (so an isolated colony does better
+      than a crowded one, with nothing written to say so), and it is the same
+      pass the signal channels will need later.
+
+      MEASURED, and the value is small for a reason: diffusion and local scarcity
+      pull against each other. At 0.09 the world is effectively well-mixed —
+      substrate arrives faster than cells can deplete it, patchiness collapses
+      from 8.9 to 0.24, and the ground is stripped to 0.5% everywhere. At 0.002
+      the field stays strongly patchy (8.97) and healthier (11.4 of 20) while
+      supporting half again as many cells as no diffusion at all. */
+  diffuse: 0.002,
+  /** What a cell spends per tick simply existing. Death by neglect lives here:
+      stand still, spoil your patch, and this number kills you. */
+  upkeep: 0.0267,
+  /** The most a cell can pull out of its field cell per tick. Caps how fast a
+      rich patch can be stripped, and is what makes crowding onto one good spot
+      self-defeating rather than free. */
+  drawRate: 0.08,
+  /** Reserve a cell can hold. Buffering, so one thin tick is not instant death. */
+  reserveMax: 6,
+  /** Reserve a new cell starts with, as a fraction of reserveMax. */
+  reserveAtBirth: 0.4,
+  /** Reserve at which a cell divides, as a fraction of reserveMax. The parent
+      and daughter split what the parent had. Above 1 nothing ever buds. */
+  budThreshold: 0.92,
+
   // ---- the run ----
   /** Hard ceiling so a runaway can't hang the tab. Not a biological limit. */
   maxCells: 4000,
-  /** Cells seeded at the start, scattered in a disc of this radius. */
-  seedCount: 8,
-  seedSpread: 90,
+  /** Cells seeded at the start, scattered in a disc of this radius. Seeded ACROSS
+      the world rather than in one clump: with no way to move yet, colonisation
+      spreads only as fast as budding carries a daughter 10 units at a time, and
+      from one clump the world would still be mostly empty after 20,000 ticks. */
+  seedCount: 60,
+  seedSpread: 480,
   /** Physics substeps per tick. More = stiffer springs stay stable. */
   substeps: 4,
   /** Hard cap on how far one cell may move in one substep, as a fraction of its

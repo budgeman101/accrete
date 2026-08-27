@@ -1,23 +1,33 @@
 /* sim.ts — the world and its rules. NO DOM, NO PIXI, NO DRAWING.
 
-   STAGE 1 of Accrete: fracture physics. See accrete-sketch.md for the design.
+   Accrete. See accrete-sketch.md for the design and the reasoning.
 
-   What is here: cells that bud, bonds that may form between parent and daughter,
-   solid cells that push each other apart, and bonds that SNAP when the strain
-   from packing exceeds what they can take.
+   RULE 1 — the world keeps what agents do to it. A substrate field that holds
+   what the world has and remembers what has been taken, regenerating toward full
+   at rate R. R is the one world constant: how fast the world forgets.
 
-   What is deliberately NOT here: the world layer, upkeep, sensing, genomes,
-   death, evolution. This stage answers one question — do lumps grow and break
-   at sizes that come out of the packing rather than out of a number anyone
-   wrote? Nowhere in this file is there a rule that says "split at N cells".
+   RULE 2 — separation after division can fail. A daughter may stay bonded to its
+   parent. Cells are solid, crowding turns into strain, and bonds SNAP. Nothing
+   anywhere says "split at N cells": where a lump breaks, and therefore how big
+   the pieces are, falls out of its shape.
+
+   RULE 3 — existing draws from the layer where you are. Upkeep is not a property
+   of the cell, it is a withdrawal from the field rule 1 already established.
+   There is no energy stat. Stand still, spoil your patch, and starve in it.
+
+   Growth is NOT scheduled. A cell buds when it has surplus, so the substrate
+   under it decides how fast it grows, and the jitter a timer needed comes free
+   from the fact that no two places are equally rich.
+
+   NOT HERE YET: sensing, emission, genomes, evolution, shape. Cells are circles
+   and every one of them is identical.
 
    THE ONE COMMITMENT: identity is DERIVED, never stored. There is no array of
    organisms. A cluster is whatever is currently connected by live bonds, worked
-   out fresh each tick. That is what lets the same code mean "cell" at one scale
-   and "cluster" at the next — it never knew the difference.
+   out fresh each tick — which is what lets the same code mean "cell" at one
+   scale and "cluster" at the next. It never knew the difference.
 
-   Everything random comes from an injected seeded Rng, never Math.random, so the
-   same seed always replays the same run. */
+   Everything random comes from an injected seeded Rng, never Math.random. */
 
 import { CFG } from './cfg.js';
 import { makeRng, type Rng } from '../kit/rng.js';
@@ -29,12 +39,13 @@ export interface Cell {
   fx: number;
   fy: number;
   r: number;
-  /** Ticks until this cell buds. */
-  clock: number;
+  /** What it has in hand. Upkeep comes out of this; surplus makes a daughter. */
+  reserve: number;
   /** Which connected component it is in this tick. Derived, never authoritative. */
   cluster: number;
-  /** For colouring and lineage only — never read by the physics. */
+  /** Lineage and colour only — never read by the physics. */
   birthTick: number;
+  alive: boolean;
 }
 
 export interface Bond {
@@ -52,28 +63,96 @@ export interface Sim {
   tick: number;
   cells: Cell[];
   bonds: Bond[];
+  /** Rule 1: the layer. Row-major, CFG.fieldSize squared. */
+  field: Float32Array;
   rng: Rng;
-  /** Forked ONCE. Forking per tick re-hashes a seed string every frame, which
-      turned out to be most of the run cost. */
   budRng: Rng;
   seed: string;
-  /** Bonds that snapped on this tick — set for exactly one tick. */
   fracturesThisTick: number;
   totalFractures: number;
+  deathsThisTick: number;
+  totalDeaths: number;
+  birthsThisTick: number;
   /** Derived each tick: sizes of every connected component, descending. */
   clusterSizes: number[];
+}
+
+/* ── the field ──────────────────────────────────────────────────────────────
+   World coordinates are centred on the field. Outside it there is simply no
+   substrate, so the world is bounded by starvation and the edge needs no rule of
+   its own — wander off and there is nothing to eat. */
+
+const half = () => (CFG.fieldSize * CFG.fieldCell) / 2;
+
+export function fieldIndexAt(x: number, y: number): number {
+  const gx = Math.floor((x + half()) / CFG.fieldCell);
+  const gy = Math.floor((y + half()) / CFG.fieldCell);
+  if (gx < 0 || gy < 0 || gx >= CFG.fieldSize || gy >= CFG.fieldSize) return -1;
+  return gy * CFG.fieldSize + gx;
+}
+
+/** Bilinear, not nearest. A cell straddling two patches should see the blend,
+    or the world has invisible cliffs in it that nothing in the design put there.
+    This is also what rule 5's gradient will be read from. */
+export function substrateAt(sim: Sim, x: number, y: number): number {
+  const n = CFG.fieldSize;
+  const gx = (x + half()) / CFG.fieldCell - 0.5;
+  const gy = (y + half()) / CFG.fieldCell - 0.5;
+  const x0 = Math.floor(gx);
+  const y0 = Math.floor(gy);
+  const tx = gx - x0;
+  const ty = gy - y0;
+  let v = 0;
+  for (let dy = 0; dy <= 1; dy++) {
+    for (let dx = 0; dx <= 1; dx++) {
+      const cx = x0 + dx;
+      const cy = y0 + dy;
+      if (cx < 0 || cy < 0 || cx >= n || cy >= n) continue;
+      const w = (dx ? tx : 1 - tx) * (dy ? ty : 1 - ty);
+      v += w * sim.field[cy * n + cx]!;
+    }
+  }
+  return v;
+}
+
+/** Take `amount` from around (x,y), spread over the four nearest patches by the
+    same weights substrateAt reads them with. Returns what was actually got —
+    less than asked for when the ground is thin. */
+function drawFrom(sim: Sim, x: number, y: number, amount: number): number {
+  const n = CFG.fieldSize;
+  const gx = (x + half()) / CFG.fieldCell - 0.5;
+  const gy = (y + half()) / CFG.fieldCell - 0.5;
+  const x0 = Math.floor(gx);
+  const y0 = Math.floor(gy);
+  const tx = gx - x0;
+  const ty = gy - y0;
+  let got = 0;
+  for (let dy = 0; dy <= 1; dy++) {
+    for (let dx = 0; dx <= 1; dx++) {
+      const cx = x0 + dx;
+      const cy = y0 + dy;
+      if (cx < 0 || cy < 0 || cx >= n || cy >= n) continue;
+      const i = cy * n + cx;
+      const w = (dx ? tx : 1 - tx) * (dy ? ty : 1 - ty);
+      const take = Math.min(amount * w, sim.field[i]!);
+      sim.field[i] = sim.field[i]! - take;
+      got += take;
+    }
+  }
+  return got;
 }
 
 export function createSim(seed: string): Sim {
   const rng = makeRng(seed);
   const place = rng.fork('place');
-  const clock = rng.fork('clock');
+
+  const field = new Float32Array(CFG.fieldSize * CFG.fieldSize).fill(CFG.fieldMax);
 
   const cells: Cell[] = [];
   for (let i = 0; i < CFG.seedCount; i++) {
     const a = place.range(0, Math.PI * 2);
     const d = Math.sqrt(place()) * CFG.seedSpread;
-    cells.push(makeCell(Math.cos(a) * d, Math.sin(a) * d, clock, 0));
+    cells.push(makeCell(Math.cos(a) * d, Math.sin(a) * d, 0));
   }
 
   const sim: Sim = {
@@ -81,39 +160,45 @@ export function createSim(seed: string): Sim {
     tick: 0,
     cells,
     bonds: [],
+    field,
     rng,
     budRng: rng.fork('bud'),
     seed,
     fracturesThisTick: 0,
     totalFractures: 0,
+    deathsThisTick: 0,
+    totalDeaths: 0,
+    birthsThisTick: 0,
     clusterSizes: [],
   };
   recomputeClusters(sim);
   return sim;
 }
 
-function makeCell(x: number, y: number, clockRng: Rng, birthTick: number): Cell {
-  const jitter = 1 + clockRng.range(-CFG.growthJitter, CFG.growthJitter);
+function makeCell(x: number, y: number, birthTick: number, reserve = CFG.reserveMax * CFG.reserveAtBirth): Cell {
   return {
     x,
     y,
     fx: 0,
     fy: 0,
     r: CFG.cellRadius,
-    clock: Math.max(1, Math.round(CFG.growthInterval * jitter)),
+    reserve,
     cluster: -1,
     birthTick,
+    alive: true,
   };
 }
 
 /* ── the tick ───────────────────────────────────────────────────────────────
    dt is accepted for interface compatibility with the kit loop, which is fixed-
-   timestep. The sim itself is tick-based on purpose: growth clocks counted in
-   ticks replay identically, where clocks counted in seconds drift with it. */
+   timestep. The sim itself is tick-based on purpose: rates counted in ticks
+   replay identically, where rates counted in seconds drift with the frame. */
 export function tick(sim: Sim, dt: number): void {
   sim.t += dt;
   sim.tick++;
   sim.fracturesThisTick = 0;
+  sim.deathsThisTick = 0;
+  sim.birthsThisTick = 0;
 
   for (let s = 0; s < CFG.substeps; s++) {
     accumulateForces(sim);
@@ -121,18 +206,16 @@ export function tick(sim: Sim, dt: number): void {
   }
 
   breakOverstressedBonds(sim);
+  metabolise(sim);
   grow(sim);
+  regenerate(sim);
+  compact(sim);
   recomputeClusters(sim);
 }
 
 /* ── forces ─────────────────────────────────────────────────────────────────
-   Two of them, and neither knows what a cluster is.
-
-   Repulsion: cells are solid and cannot interpenetrate. This is the force that
-   crowding turns into strain — as a lump fills in, interior cells push outward
-   against the bonds holding the thing together.
-
-   Bonds: a spring between parent and daughter. Its tension is what eventually
+   Two, and neither knows what a cluster is. Repulsion because cells are solid;
+   a bond spring between parent and daughter whose tension is what eventually
    exceeds its strength. Nothing counts cells. */
 function accumulateForces(sim: Sim): void {
   const cells = sim.cells;
@@ -142,15 +225,13 @@ function accumulateForces(sim: Sim): void {
     c.fy = 0;
   }
 
-  // spatial hash so this stays O(n) rather than O(n^2) at four thousand cells
+  // spatial hash so this stays O(n) rather than O(n^2)
   const cs = CFG.cellRadius * 2.2;
   const buckets = new Map<number, number[]>();
   const key = (gx: number, gy: number) => gx * 73856093 ^ gy * 19349663;
   for (let i = 0; i < cells.length; i++) {
     const c = cells[i]!;
-    const gx = Math.floor(c.x / cs);
-    const gy = Math.floor(c.y / cs);
-    const k = key(gx, gy);
+    const k = key(Math.floor(c.x / cs), Math.floor(c.y / cs));
     const b = buckets.get(k);
     if (b) b.push(i);
     else buckets.set(k, [i]);
@@ -173,8 +254,7 @@ function accumulateForces(sim: Sim): void {
           const rest = ci.r + cj.r;
           if (d2 >= rest * rest || d2 === 0) continue;
           const d = Math.sqrt(d2);
-          const overlap = rest - d;
-          const f = CFG.repulsion * overlap;
+          const f = CFG.repulsion * (rest - d);
           const nx = dx / d;
           const ny = dy / d;
           ci.fx -= nx * f;
@@ -194,8 +274,7 @@ function accumulateForces(sim: Sim): void {
     const dy = b.y - a.y;
     const d = Math.hypot(dx, dy) || 1e-6;
     const rest = (a.r + b.r) * CFG.bondRest;
-    const stretch = d - rest;
-    const f = CFG.bondStiffness * stretch;
+    const f = CFG.bondStiffness * (d - rest);
     // tension is stretch only; a bond being squashed is not being torn
     bond.tension = Math.max(0, f);
     const nx = dx / d;
@@ -227,9 +306,8 @@ function integrate(sim: Sim): void {
 }
 
 /* ── fracture ───────────────────────────────────────────────────────────────
-   The whole point. Nobody decides a cluster should divide; a bond somewhere in
-   it is simply carrying more than it can hold, and lets go. Where it lets go —
-   and therefore how big the two pieces are — falls out of the shape. */
+   Nobody decides a cluster should divide. A bond somewhere in it is carrying
+   more than it can hold, and lets go. */
 function breakOverstressedBonds(sim: Sim): void {
   for (const bond of sim.bonds) {
     if (!bond.live) continue;
@@ -241,24 +319,47 @@ function breakOverstressedBonds(sim: Sim): void {
   }
 }
 
+/* ── rule 3: existing costs, and the cost comes out of the world ────────────
+   A cell draws what it can from the field cell it stands on and pays upkeep out
+   of what it holds. The withdrawal is written back into the layer and stays
+   there until the layer regenerates — which is rule 1 doing its work.
+
+   Nothing here says "seek food". A cell that cannot cover upkeep simply stops
+   being one of the cells. */
+function metabolise(sim: Sim): void {
+  for (const c of sim.cells) {
+    const want = Math.min(CFG.drawRate, CFG.reserveMax - c.reserve);
+    if (want > 0) c.reserve += drawFrom(sim, c.x, c.y, want);
+    c.reserve -= CFG.upkeep;
+    if (c.reserve <= 0) {
+      c.alive = false;
+      sim.deathsThisTick++;
+      sim.totalDeaths++;
+    }
+  }
+}
+
 /* ── growth ─────────────────────────────────────────────────────────────────
-   A cell buds. The daughter appears touching it, and whether it STAYS attached
-   is the stickiness dial — the thing that becomes a gene in stage 3. At zero it
-   separates cleanly and the world is unicellular forever. */
+   A cell with surplus divides, and the two of them split what it had. Whether
+   the daughter STAYS attached is the stickiness dial — the thing that becomes a
+   gene once genomes exist. At zero it separates cleanly and the world is
+   unicellular forever. */
 function grow(sim: Sim): void {
-  if (sim.cells.length >= CFG.maxCells) return;
   const budRng = sim.budRng;
   const n = sim.cells.length;
+  const threshold = CFG.reserveMax * CFG.budThreshold;
   for (let i = 0; i < n; i++) {
     const parent = sim.cells[i]!;
-    if (--parent.clock > 0) continue;
+    if (!parent.alive || parent.reserve < threshold) continue;
     if (sim.cells.length >= CFG.maxCells) break;
 
     const a = budRng.range(0, Math.PI * 2);
     const d = (parent.r + CFG.cellRadius) * CFG.budOffset; // touching, not inside
-    const child = makeCell(parent.x + Math.cos(a) * d, parent.y + Math.sin(a) * d, budRng, sim.tick);
-    parent.clock = Math.max(1, Math.round(CFG.growthInterval * (1 + budRng.range(-CFG.growthJitter, CFG.growthJitter))));
+    const share = parent.reserve / 2;
+    parent.reserve = share;
+    const child = makeCell(parent.x + Math.cos(a) * d, parent.y + Math.sin(a) * d, sim.tick, share);
     const idx = sim.cells.push(child) - 1;
+    sim.birthsThisTick++;
 
     if (CFG.stickiness > 0) {
       sim.bonds.push({
@@ -272,6 +373,73 @@ function grow(sim: Sim): void {
   }
 }
 
+/** Rule 1's other half: the world forgets, at rate R, and no faster — plus
+    substrate spreading sideways, which is what stops the field's grid from
+    showing through as tiles and lets a spoiled patch be refilled by its
+    neighbours as well as by time. */
+function regenerate(sim: Sim): void {
+  const f = sim.field;
+  const n = CFG.fieldSize;
+  const max = CFG.fieldMax;
+  const r = CFG.regen;
+  const d = CFG.diffuse;
+
+  if (d > 0) {
+    const src = f.slice();
+    for (let y = 0; y < n; y++) {
+      for (let x = 0; x < n; x++) {
+        const i = y * n + x;
+        const v = src[i]!;
+        // edges reflect: a boundary cell simply has fewer neighbours to average
+        let sum = 0;
+        let k = 0;
+        if (x > 0) { sum += src[i - 1]!; k++; }
+        if (x < n - 1) { sum += src[i + 1]!; k++; }
+        if (y > 0) { sum += src[i - n]!; k++; }
+        if (y < n - 1) { sum += src[i + n]!; k++; }
+        f[i] = v + d * (sum / k - v);
+      }
+    }
+  }
+
+  for (let i = 0; i < f.length; i++) {
+    const v = f[i]!;
+    if (v < max) f[i] = v + (max - v) * r;
+  }
+}
+
+/* ── compaction ─────────────────────────────────────────────────────────────
+   Bonds hold cell INDICES, so removing a dead cell means remapping them. Doing
+   it here, once, keeps every other loop free of liveness checks. */
+function compact(sim: Sim): void {
+  if (sim.deathsThisTick === 0) {
+    if (sim.fracturesThisTick > 0) sim.bonds = sim.bonds.filter((b) => b.live);
+    return;
+  }
+
+  const remap = new Int32Array(sim.cells.length).fill(-1);
+  const kept: Cell[] = [];
+  for (let i = 0; i < sim.cells.length; i++) {
+    const c = sim.cells[i]!;
+    if (!c.alive) continue;
+    remap[i] = kept.length;
+    kept.push(c);
+  }
+  sim.cells = kept;
+
+  const bonds: Bond[] = [];
+  for (const b of sim.bonds) {
+    if (!b.live) continue;
+    const a = remap[b.a]!;
+    const c = remap[b.b]!;
+    if (a < 0 || c < 0) continue; // a bond to a dead cell is not a bond
+    b.a = a;
+    b.b = c;
+    bonds.push(b);
+  }
+  sim.bonds = bonds;
+}
+
 /* ── identity, derived ──────────────────────────────────────────────────────
    There is no organism list. Follow the live bonds; whatever is connected is a
    thing. Run it on a world of loose cells and every cell is its own cluster of
@@ -281,7 +449,7 @@ export function recomputeClusters(sim: Sim): void {
   const n = cells.length;
 
   /* Adjacency as flat arrays (counts -> offsets -> fill) rather than n little
-     JS arrays. At four thousand cells every tick, allocating n arrays per tick
+     JS arrays. At a few thousand cells every tick, allocating n arrays per tick
      was the single largest cost in the whole sim. */
   const deg = new Int32Array(n + 1);
   let edges = 0;
@@ -332,8 +500,8 @@ export function recomputeClusters(sim: Sim): void {
 }
 
 /* ── readouts ───────────────────────────────────────────────────────────────
-   Instrumentation is not decoration here. Without a number coming out, this is
-   a screensaver rather than the experiment. */
+   Instrumentation is not decoration. Without a number coming out, this is a
+   screensaver rather than the experiment. */
 export interface Stats {
   cells: number;
   clusters: number;
@@ -341,11 +509,27 @@ export interface Stats {
   meanClusterSize: number;
   liveBonds: number;
   totalFractures: number;
+  totalDeaths: number;
+  /** Mean substrate across the whole field. How spoiled the world is. */
+  fieldMean: number;
+  /** Spread of substrate — how PATCHY the world has become. Zero at the start,
+      so anything above zero was made by the cells. */
+  fieldSd: number;
+  meanReserve: number;
 }
 
 export function stats(sim: Sim): Stats {
   const sizes = sim.clusterSizes;
   const total = sizes.reduce((a, b) => a + b, 0);
+  const f = sim.field;
+  let sum = 0;
+  for (let i = 0; i < f.length; i++) sum += f[i]!;
+  const mean = f.length ? sum / f.length : 0;
+  let vs = 0;
+  for (let i = 0; i < f.length; i++) {
+    const d = f[i]! - mean;
+    vs += d * d;
+  }
   return {
     cells: sim.cells.length,
     clusters: sizes.length,
@@ -353,6 +537,10 @@ export function stats(sim: Sim): Stats {
     meanClusterSize: sizes.length ? total / sizes.length : 0,
     liveBonds: sim.bonds.reduce((n, b) => n + (b.live ? 1 : 0), 0),
     totalFractures: sim.totalFractures,
+    totalDeaths: sim.totalDeaths,
+    fieldMean: mean,
+    fieldSd: f.length ? Math.sqrt(vs / f.length) : 0,
+    meanReserve: sim.cells.length ? sim.cells.reduce((a, c) => a + c.reserve, 0) / sim.cells.length : 0,
   };
 }
 
@@ -368,10 +556,14 @@ export function resetSim(sim: Sim, seed = sim.seed): void {
   sim.tick = 0;
   sim.cells = fresh.cells;
   sim.bonds = fresh.bonds;
+  sim.field = fresh.field;
   sim.rng = fresh.rng;
   sim.budRng = fresh.budRng;
   sim.seed = fresh.seed;
   sim.fracturesThisTick = 0;
   sim.totalFractures = 0;
+  sim.deathsThisTick = 0;
+  sim.totalDeaths = 0;
+  sim.birthsThisTick = 0;
   sim.clusterSizes = fresh.clusterSizes;
 }

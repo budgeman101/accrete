@@ -1,28 +1,31 @@
 /* view.ts — draws the sim with Pixi. Reads sim state; never writes it.
 
-   STAGE 1 view: instrumentation, not art. The sketch defers the visual design
-   deliberately, and this is not it — it is the minimum needed to look at the
-   physics and see whether it is doing what the tests say it is.
+   Instrumentation, not art. The sketch defers the visual design deliberately and
+   this is not it. It is the minimum needed to look at the rules and see whether
+   they are doing what the tests say.
 
-   Two things are drawn, and both are diagnostic:
+   Three layers, each diagnostic:
 
-     CELLS, tinted by which cluster they are in. The hue comes from the lowest
-     cell index in the cluster rather than from the cluster's id, because ids are
-     recomputed from scratch every tick and would strobe. Lowest-index is stable
-     while a lump holds together and CHANGES WHEN IT SPLITS — so a fracture is
-     visible as one half of a lump changing colour, which is the event this whole
-     stage exists to produce.
+     THE FIELD (rule 1). The world's memory, drawn as it is. Ground the cells
+     have spoiled goes dark and stays dark, and you can watch it come back at
+     rate R long after whatever ate it has died. Stage 1 rendered as confetti
+     precisely because this layer did not exist — there was nowhere to BE.
 
-     BONDS, tinted by how close they are to breaking. A bond carrying no load is
-     dim; one at its limit is hot. You can watch strain gather in a growing lump
-     and see where it is about to tear before it does.
+     BONDS, tinted by how close they are to breaking. Slack is dim and cool; a
+     bond at its limit is hot. Strain gathering in a growing lump is visible
+     before it tears.
 
-   Nothing here calls app.render() — the loop does that once per frame, after
-   every mounted scene has drawn. */
+     CELLS, tinted by which cluster they are in, and faded by how near they are
+     to starving. The hue comes from the LOWEST CELL INDEX in the cluster rather
+     than the cluster's id, because ids are recomputed every tick and would
+     strobe. Lowest-index is stable while a lump holds together and changes when
+     it splits — so a fracture reads as half a lump changing colour.
+
+   Nothing here calls app.render() — the loop does that once per frame. */
 
 import { Container, Graphics } from 'pixi.js';
 import { CFG } from './cfg.js';
-import type { Sim } from './sim.js';
+import { substrateAt, type Sim } from './sim.js';
 
 /** hsl → 0xRRGGBB, so we don't depend on how Pixi parses colour strings. */
 function hslHex(h: number, s: number, l: number): number {
@@ -40,11 +43,21 @@ export function createView(parent: Container, sim: Sim) {
   const root = new Container();
   parent.addChild(root);
 
+  const ground = new Graphics();
   const bonds = new Graphics();
   const cells = new Graphics();
-  root.addChild(bonds, cells);
+  root.addChild(ground, bonds, cells);
 
   let showBonds = true;
+  /* The ground is sampled at a finer grid than the field and read BILINEARLY, so
+     what you see is the same smooth quantity a cell draws from rather than the
+     storage grid. Drawn nearest-neighbour at field resolution it reads as tiles,
+     which is the simulation's bookkeeping showing through the world.
+     Redrawn every few frames only: at regen 0.0016 the field moves slowly and
+     redrawing thousands of rects every frame is the most expensive thing here. */
+  const GROUND_SUB = 2;
+  const GROUND_EVERY = 6;
+  let groundAge = GROUND_EVERY;
 
   return {
     root,
@@ -53,6 +66,25 @@ export function createView(parent: Container, sim: Sim) {
     setTrailVisible(on: boolean) { showBonds = on; if (!on) bonds.clear(); },
 
     render() {
+      /* ── the field ── */
+      if (++groundAge >= GROUND_EVERY) {
+        groundAge = 0;
+        const n = CFG.fieldSize * GROUND_SUB;
+        const fc = CFG.fieldCell / GROUND_SUB;
+        const origin = -(CFG.fieldSize * CFG.fieldCell) / 2;
+        ground.clear();
+        for (let gy = 0; gy < n; gy++) {
+          const wy = origin + (gy + 0.5) * fc;
+          for (let gx = 0; gx < n; gx++) {
+            const wx = origin + (gx + 0.5) * fc;
+            const v = Math.max(0, Math.min(1, substrateAt(sim, wx, wy) / CFG.fieldMax));
+            // full ground is a dim green; spoiled ground goes toward bare dark
+            ground.rect(origin + gx * fc, origin + gy * fc, fc + 0.5, fc + 0.5);
+            ground.fill({ color: hslHex(96 - v * 8, 12 + v * 26, 7 + v * 15) });
+          }
+        }
+      }
+
       /* lowest cell index per cluster — the stable identity for colouring */
       const anchor = new Map<number, number>();
       for (let i = 0; i < sim.cells.length; i++) {
@@ -72,9 +104,8 @@ export function createView(parent: Container, sim: Sim) {
           bonds.lineTo(c.x, c.y);
           bonds.stroke({
             width: 1.6 + load * 1.6,
-            // slack bonds sit cool and dim; a bond at its limit goes hot
-            color: hslHex(200 - load * 200, 55 + load * 45, 38 + load * 22),
-            alpha: 0.35 + load * 0.65,
+            color: hslHex(200 - load * 200, 55 + load * 45, 40 + load * 24),
+            alpha: 0.4 + load * 0.6,
           });
         }
       }
@@ -82,13 +113,16 @@ export function createView(parent: Container, sim: Sim) {
       cells.clear();
       for (const c of sim.cells) {
         const hue = hueFor(anchor.get(c.cluster) ?? 0);
-        const lone = sim.clusterSizes.length === sim.cells.length;
+        const alone = sim.clusterSizes[c.cluster] === 1 || sim.clusterSizes.length === sim.cells.length;
+        // a starving cell fades toward the ground; a full one is bright
+        const fed = Math.max(0, Math.min(1, c.reserve / CFG.reserveMax));
         cells.circle(c.x, c.y, c.r);
-        // a cell that is nobody's partner is drawn flat and grey-ish, so the
-        // difference between a soup of singles and a world of lumps is instant
-        cells.fill({ color: lone ? 0x6a7480 : hslHex(hue, 46, 62), alpha: 0.95 });
+        cells.fill({
+          color: alone ? hslHex(210, 8, 34 + fed * 26) : hslHex(hue, 30 + fed * 34, 34 + fed * 32),
+          alpha: 0.96,
+        });
         cells.circle(c.x, c.y, c.r);
-        cells.stroke({ width: 1, color: 0x1b2027, alpha: 0.5 });
+        cells.stroke({ width: 1, color: 0x10141a, alpha: 0.55 });
       }
     },
 
@@ -100,5 +134,5 @@ export function createView(parent: Container, sim: Sim) {
 
 export type View = ReturnType<typeof createView>;
 
-/** Re-exported so main can size the camera to the world without importing cfg. */
-export const worldExtent = () => CFG.seedSpread * 6;
+/** The world's half-extent, so the camera can frame it without importing cfg. */
+export const worldExtent = () => (CFG.fieldSize * CFG.fieldCell) / 2;
