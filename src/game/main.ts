@@ -33,7 +33,7 @@ import { createScenes, type SceneContext } from '../kit/scenes.js';
 import { createSettings } from '../kit/settings.js';
 
 import { CFG } from './cfg.js';
-import { createSim, lapProgress, resetSim, tick, type Sim } from './sim.js';
+import { createSim, resetSim, stats, tick, type Sim } from './sim.js';
 import { createView, type View } from './view.js';
 
 import moteUrl from '../assets/mote.png';
@@ -172,7 +172,7 @@ async function boot() {
     let sim: Sim;
     let view: View;
     let cam: ReturnType<typeof createCamera>;
-    let hud: { rLaps: any; rTotal: any; mLap: any };
+    let hud: { rCells: any; rClusters: any; rLargest: any; mLargest: any };
 
     return {
       // getters, so DBG.sim reaches the CURRENT scene's state
@@ -193,19 +193,20 @@ async function boot() {
         cam.fromJSON(store.data.camera);
         ctx.layer.addChild(cam.viewport);
 
-        view = createView(cam.viewport, sim, texture);
+        view = createView(cam.viewport, sim);
         view.setTrailVisible(settings.get('trails'));
         currentView = view;
 
         /* chrome — inside ctx.el, so it leaves when the scene does */
-        const rLaps = readout({ label: 'Laps', value: '0' });
-        const rTotal = readout({ label: 'All time', value: String(store.data.totalLaps) });
+        const rCells = readout({ label: 'Cells', value: '0' });
+        const rClusters = readout({ label: 'Clusters', value: '0' });
+        const rLargest = readout({ label: 'Largest', value: '0' });
         const rSeed = readout({ label: 'Seed', value: seed });
         const topLeft = overlay('top-left', { row: true });
-        topLeft.append(rLaps, rTotal, rSeed);
+        topLeft.append(rCells, rClusters, rLargest, rSeed);
 
-        const mLap = meter({ label: 'This lap', value: 0 });
-        const side = panel({ title: null, children: [mLap] });
+        const mLargest = meter({ label: 'Largest / cells', value: 0 });
+        const side = panel({ title: null, children: [mLargest] });
         side.style.width = '190px';
         const bottomLeft = overlay('bottom-left');
         bottomLeft.append(side);
@@ -218,27 +219,33 @@ async function boot() {
         );
 
         ctx.el.append(topLeft, bottomLeft, topRight);
-        hud = { rLaps, rTotal, mLap };
+        hud = { rCells, rClusters, rLargest, mLargest };
       },
 
       update(dt: number) {
         tick(sim, dt);
         cam.update(dt);
 
-        if (sim.lapJustCompleted) {
-          store.data.totalLaps++;
-          store.data.bestSession = Math.max(store.data.bestSession, sim.laps);
+        /* A fracture is the event this stage exists to produce, so it is the
+           thing that gets logged and heard. Nothing anywhere decided it should
+           happen — a bond was simply carrying more than it could hold. */
+        if (sim.fracturesThisTick > 0) {
+          const s = stats(sim);
+          store.data.totalLaps += sim.fracturesThisTick;
+          store.data.bestSession = Math.max(store.data.bestSession, s.largest);
           store.touch();
-          log.event('lap', { lap: sim.laps, t: +sim.t.toFixed(2) });
-          Audio.sfx('ping', { volume: 0.45, rate: 1 + (sim.laps % 5) * 0.05 });
+          log.event('fracture', { n: sim.fracturesThisTick, largest: s.largest, cells: s.cells, tick: sim.tick });
+          Audio.sfx('ping', { volume: 0.28, rate: 0.8 + Math.min(1, s.largest / 40) * 0.6 });
         }
       },
 
       render() {
         view.render();
-        hud.rLaps.set(sim.laps);
-        hud.rTotal.set(store.data.totalLaps);
-        hud.mLap.set(lapProgress(sim));
+        const s = stats(sim);
+        hud.rCells.set(s.cells);
+        hud.rClusters.set(s.clusters);
+        hud.rLargest.set(s.largest);
+        hud.mLargest.set(s.cells ? s.largest / s.cells : 0);
       },
 
       /** Reachable as DBG.reset() — a known state is what makes stepping reproducible. */
@@ -309,12 +316,13 @@ async function boot() {
       const sim: Sim | null = (scenes.active as any)?.sim ?? null;
       return {
         scene: scenes.current,
-        laps: sim?.laps ?? 0,
+        tick: sim?.tick ?? 0,
         t: sim ? +sim.t.toFixed(3) : 0,
-        x: sim ? +sim.mote.x.toFixed(3) : 0,
-        y: sim ? +sim.mote.y.toFixed(3) : 0,
+        cells: sim?.cells.length ?? 0,
+        clusters: sim?.clusterSizes.length ?? 0,
+        largest: sim?.clusterSizes[0] ?? 0,
+        fractures: sim?.totalFractures ?? 0,
         seed: sim?.seed ?? '',
-        totalLaps: store.data.totalLaps,
       };
     },
   });

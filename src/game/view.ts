@@ -1,13 +1,26 @@
 /* view.ts — draws the sim with Pixi. Reads sim state; never writes it.
 
-   Given a parent Container rather than owning the Application: the app is
-   created once at boot, and each scene hands its own layer down. That's what
-   lets a scene tear its board content down without touching anyone else's.
+   STAGE 1 view: instrumentation, not art. The sketch defers the visual design
+   deliberately, and this is not it — it is the minimum needed to look at the
+   physics and see whether it is doing what the tests say it is.
+
+   Two things are drawn, and both are diagnostic:
+
+     CELLS, tinted by which cluster they are in. The hue comes from the lowest
+     cell index in the cluster rather than from the cluster's id, because ids are
+     recomputed from scratch every tick and would strobe. Lowest-index is stable
+     while a lump holds together and CHANGES WHEN IT SPLITS — so a fracture is
+     visible as one half of a lump changing colour, which is the event this whole
+     stage exists to produce.
+
+     BONDS, tinted by how close they are to breaking. A bond carrying no load is
+     dim; one at its limit is hot. You can watch strain gather in a growing lump
+     and see where it is about to tear before it does.
 
    Nothing here calls app.render() — the loop does that once per frame, after
    every mounted scene has drawn. */
 
-import { Container, Graphics, Sprite, type Texture } from 'pixi.js';
+import { Container, Graphics } from 'pixi.js';
 import { CFG } from './cfg.js';
 import type { Sim } from './sim.js';
 
@@ -20,59 +33,72 @@ function hslHex(h: number, s: number, l: number): number {
   return (f(0) << 16) | (f(8) << 8) | f(4);
 }
 
-export function createView(parent: Container, sim: Sim, texture: Texture) {
+/** Spread consecutive seeds around the wheel instead of into a gradient. */
+const hueFor = (n: number) => (n * 137.508) % 360;
+
+export function createView(parent: Container, sim: Sim) {
   const root = new Container();
   parent.addChild(root);
 
-  const glow = new Graphics();
-  const trail = new Graphics();
-  const star = new Graphics();
-  root.addChild(glow, trail, star);
+  const bonds = new Graphics();
+  const cells = new Graphics();
+  root.addChild(bonds, cells);
 
-  const mote = new Sprite(texture);
-  mote.anchor.set(0.5);
-  mote.tint = hslHex(sim.mote.hue, 80, 68);
-  root.addChild(mote);
-
-  let showTrail = true;
-
-  function drawStar() {
-    star.clear();
-    glow.clear();
-    // stacked translucent discs instead of a gradient. Enough of them, at a low
-    // enough alpha, that the falloff reads as smooth rather than as rings.
-    const RINGS = 14;
-    for (let i = RINGS; i >= 1; i--) {
-      glow.circle(0, 0, CFG.starSize * (0.8 + (i / RINGS) * 2.8));
-      glow.fill({ color: 0xe88c3c, alpha: 0.028 });
-    }
-    star.circle(0, 0, CFG.starSize * 0.62);
-    star.fill({ color: 0xffcf82 });
-    star.circle(0, 0, CFG.starSize * 0.34);
-    star.fill({ color: 0xfff6d6 });
-  }
+  let showBonds = true;
 
   return {
     root,
-    setTrailVisible(on: boolean) { showTrail = on; if (!on) trail.clear(); },
+    setBondsVisible(on: boolean) { showBonds = on; if (!on) bonds.clear(); },
+    /** Kept so the settings toggle in main has something to talk to. */
+    setTrailVisible(on: boolean) { showBonds = on; if (!on) bonds.clear(); },
 
     render() {
-      drawStar();
-
-      const pts = sim.mote.trail;
-      trail.clear();
-      if (showTrail && pts.length >= 4) {
-        trail.moveTo(pts[0]!, pts[1]!);
-        for (let i = 2; i < pts.length; i += 2) trail.lineTo(pts[i]!, pts[i + 1]!);
-        trail.stroke({ width: 2, color: hslHex(sim.mote.hue, 80, 68), alpha: CFG.trailAlpha });
+      /* lowest cell index per cluster — the stable identity for colouring */
+      const anchor = new Map<number, number>();
+      for (let i = 0; i < sim.cells.length; i++) {
+        const c = sim.cells[i]!;
+        const cur = anchor.get(c.cluster);
+        if (cur === undefined || i < cur) anchor.set(c.cluster, i);
       }
 
-      mote.position.set(sim.mote.x, sim.mote.y);
-      mote.scale.set(CFG.moteScale);
+      bonds.clear();
+      if (showBonds) {
+        for (const b of sim.bonds) {
+          if (!b.live) continue;
+          const a = sim.cells[b.a]!;
+          const c = sim.cells[b.b]!;
+          const load = b.strength > 0 ? Math.min(1, b.tension / b.strength) : 0;
+          bonds.moveTo(a.x, a.y);
+          bonds.lineTo(c.x, c.y);
+          bonds.stroke({
+            width: 1.6 + load * 1.6,
+            // slack bonds sit cool and dim; a bond at its limit goes hot
+            color: hslHex(200 - load * 200, 55 + load * 45, 38 + load * 22),
+            alpha: 0.35 + load * 0.65,
+          });
+        }
+      }
+
+      cells.clear();
+      for (const c of sim.cells) {
+        const hue = hueFor(anchor.get(c.cluster) ?? 0);
+        const lone = sim.clusterSizes.length === sim.cells.length;
+        cells.circle(c.x, c.y, c.r);
+        // a cell that is nobody's partner is drawn flat and grey-ish, so the
+        // difference between a soup of singles and a world of lumps is instant
+        cells.fill({ color: lone ? 0x6a7480 : hslHex(hue, 46, 62), alpha: 0.95 });
+        cells.circle(c.x, c.y, c.r);
+        cells.stroke({ width: 1, color: 0x1b2027, alpha: 0.5 });
+      }
     },
 
-    destroy() { root.destroy({ children: true }); },
+    destroy() {
+      root.destroy({ children: true });
+    },
   };
 }
 
 export type View = ReturnType<typeof createView>;
+
+/** Re-exported so main can size the camera to the world without importing cfg. */
+export const worldExtent = () => CFG.seedSpread * 6;

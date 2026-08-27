@@ -1,147 +1,119 @@
-/* sim.test.ts — the sim, tested with no browser at all.
+/* sim.test.ts — stage 1: does grow-and-break work, and is the size emergent?
 
-   This is only possible because sim.ts has no DOM and no Pixi in it. Keeping that
-   line clean is what turns "I think the rules are right" into something checked.
-   Dawnward's 47 hand-rolled rule checks were exactly this shape; here they're
-   just tests.
+   These are not "does the code run" tests. Each one is a claim from
+   accrete-sketch.md that the physics either honours or doesn't. The load-bearing
+   ones are the last two: cluster size must come out of the packing, which means
+   it has to RESPOND to bond strength and it has to plateau on its own.
 
    Run: npm test */
 
-import { describe, expect, it } from 'vitest';
-import { createSim, lapProgress, resetSim, tick } from '../src/game/sim.js';
+import { afterEach, describe, expect, it } from 'vitest';
+import { createSim, resetSim, stats, tick, type Sim } from '../src/game/sim.js';
 import { CFG } from '../src/game/cfg.js';
-import { makeRng } from '../src/kit/rng.js';
-import { createStore } from '../src/kit/save.js';
 
-const run = (sim: ReturnType<typeof createSim>, ticks: number, dt = 1 / 60) => {
+/* A smaller world than the real one: these tests need thousands of ticks, and
+   the cap is a tab-safety limit rather than anything biological. Set before BASE
+   is captured so afterEach restores to the test cap, not the production one. */
+Object.assign(CFG, { maxCells: 500 });
+const BASE = { ...CFG };
+afterEach(() => Object.assign(CFG, BASE));
+
+const run = (seed: string, ticks: number, dt = 1 / 60): Sim => {
+  const sim = createSim(seed);
   for (let i = 0; i < ticks; i++) tick(sim, dt);
   return sim;
 };
 
-describe('sim determinism', () => {
+describe('stability', () => {
+  it('never produces a non-finite position', () => {
+    const sim = run('brimtoveharn', 1500);
+    for (const c of sim.cells) {
+      expect(Number.isFinite(c.x)).toBe(true);
+      expect(Number.isFinite(c.y)).toBe(true);
+    }
+  });
+
+  it('does not fling cells to infinity — the whole population stays local', () => {
+    const sim = run('brimtoveharn', 1500);
+    const far = Math.max(...sim.cells.map((c) => Math.hypot(c.x, c.y)));
+    // a packed disc of n cells has radius ~ r*sqrt(n); allow generous slack
+    const plausible = CFG.cellRadius * Math.sqrt(sim.cells.length) * 6 + CFG.seedSpread;
+    expect(far).toBeLessThan(plausible);
+  });
+
   it('replays identically from the same seed', () => {
-    const a = run(createSim('brimtoveharn'), 600);
-    const b = run(createSim('brimtoveharn'), 600);
-    expect(b.mote.x).toBe(a.mote.x);
-    expect(b.mote.y).toBe(a.mote.y);
-    expect(b.laps).toBe(a.laps);
-    expect(b.mote.hue).toBe(a.mote.hue);
+    const a = stats(run('brimtoveharn', 900));
+    const b = stats(run('brimtoveharn', 900));
+    expect(b).toEqual(a);
   });
 
-  it('differs on a different seed', () => {
-    const a = run(createSim('seed-one'), 60);
-    const b = run(createSim('seed-two'), 60);
-    expect(b.mote.hue).not.toBe(a.mote.hue);   // look is seeded...
-    expect(b.mote.x).toBe(a.mote.x);           // ...but the orbit is not random
-  });
-
-  it('reaches the exact same state after reset and replay', () => {
-    const sim = createSim('replay');
-    run(sim, 300);
-    const mid = { x: sim.mote.x, laps: sim.laps };
-    run(sim, 300);
-    resetSim(sim);
-    run(sim, 300);
-    expect(sim.mote.x).toBe(mid.x);
-    expect(sim.laps).toBe(mid.laps);
+  it('diverges on a different seed', () => {
+    const a = stats(run('brimtoveharn', 900));
+    const b = stats(run('kelpwrackfen', 900));
+    expect(b).not.toEqual(a);
   });
 });
 
-describe('lap counting', () => {
-  it('counts one lap per full turn at the configured speed', () => {
-    // 600 ticks at 1/60 = 10s; at CFG.orbitSpeed rad/s that is 9 rad ≈ 1.43 turns
-    const sim = run(createSim('laps'), 600);
-    const expected = Math.floor((CFG.orbitSpeed * 10) / (Math.PI * 2));
-    expect(sim.laps).toBe(expected);
+describe('the unicellular control', () => {
+  it('with stickiness 0 every cell is its own cluster, forever', () => {
+    CFG.stickiness = 0;
+    const sim = run('brimtoveharn', 1200);
+    expect(sim.cells.length).toBeGreaterThan(CFG.seedCount);
+    expect(sim.clusterSizes.every((s) => s === 1)).toBe(true);
+    expect(sim.clusterSizes.length).toBe(sim.cells.length);
   });
 
-  it('reports lap progress in 0..1', () => {
-    const sim = run(createSim('progress'), 137);
-    const p = lapProgress(sim);
-    expect(p).toBeGreaterThanOrEqual(0);
-    expect(p).toBeLessThan(1);
-  });
-
-  it('flags lapJustCompleted for exactly one tick', () => {
-    const sim = createSim('flag');
-    let flagged = 0;
-    for (let i = 0; i < 600; i++) { tick(sim, 1 / 60); if (sim.lapJustCompleted) flagged++; }
-    expect(flagged).toBe(sim.laps);
-  });
-
-  it('keeps the trail within the configured length', () => {
-    const sim = run(createSim('trail'), 500);
-    expect(sim.mote.trail.length).toBeLessThanOrEqual(CFG.trailLength * 2);
+  it('with stickiness 0 nothing can fracture, because nothing is bonded', () => {
+    CFG.stickiness = 0;
+    const sim = run('brimtoveharn', 1200);
+    expect(sim.bonds.length).toBe(0);
+    expect(sim.totalFractures).toBe(0);
   });
 });
 
-describe('rng streams', () => {
-  it('forks independently — draining one does not shift another', () => {
-    const base = makeRng('world');
-    const weatherA = base.fork('weather');
-    const first = [weatherA(), weatherA(), weatherA()];
-
-    const base2 = makeRng('world');
-    const loot = base2.fork('loot');
-    for (let i = 0; i < 50; i++) loot();          // drain a different stream hard
-    const weatherB = base2.fork('weather');
-    expect([weatherB(), weatherB(), weatherB()]).toEqual(first);
+describe('clusters form and break', () => {
+  it('with stickiness on, cells accumulate into multi-cell clusters', () => {
+    const sim = run('brimtoveharn', 900);
+    expect(stats(sim).largest).toBeGreaterThan(1);
   });
 
-  it('restores mid-stream from saved state', () => {
-    const rng = makeRng('resume');
-    rng(); rng();
-    const state = rng.state();
-    const next = rng();
-    rng.setState(state);
-    expect(rng()).toBe(next);
+  it('bonds snap — crowding tears the thing apart with no split rule anywhere', () => {
+    const sim = run('brimtoveharn', 2000);
+    expect(sim.totalFractures).toBeGreaterThan(0);
+  });
+
+  it('fracture makes MORE clusters than were seeded — that is reproduction', () => {
+    const sim = run('brimtoveharn', 2000);
+    expect(sim.clusterSizes.length).toBeGreaterThan(CFG.seedCount);
   });
 });
 
-describe('save migration', () => {
-  const makeStore = () => createStore({
-    key: 'test',
-    version: 2,
-    defaults: { totalLaps: 0, bestSession: 0, lastSeed: '' },
-    migrate: {
-      2: (d: any) => {
-        if (d.laps !== undefined) { d.totalLaps = d.laps; delete d.laps; }
-        if (d.bestSession === undefined) d.bestSession = 0;
-        return d;
-      },
-    },
+describe('size is emergent, not authored', () => {
+  it('the largest cluster plateaus far below the cell count', () => {
+    const sim = run('brimtoveharn', 2500);
+    const s = stats(sim);
+    // if size were unbounded, everything would be one lump
+    expect(s.largest).toBeLessThan(s.cells * 0.6);
+    expect(s.cells).toBeGreaterThan(40);
   });
 
-  it('migrates a v1 save into the v2 shape', () => {
-    const store = makeStore();
-    const v1 = JSON.stringify({ e: 'kitsave1', v: 1, d: { laps: 42, lastSeed: 'old' } });
-    const result = store.import(v1, { save: false });
-    expect(result.ok).toBe(true);
-    expect(store.data.totalLaps).toBe(42);
-    expect(store.data.bestSession).toBe(0);      // filled from defaults
-    expect((store.data as any).laps).toBeUndefined();
-    expect(store.data.lastSeed).toBe('old');
+  it('stronger bonds hold bigger clusters — size responds to the physics', () => {
+    CFG.stickiness = 0.35;
+    const weak = stats(run('brimtoveharn', 2500)).largest;
+    Object.assign(CFG, BASE);
+    CFG.stickiness = 1;
+    const strong = stats(run('brimtoveharn', 2500)).largest;
+    expect(strong).toBeGreaterThan(weak);
   });
+});
 
-  it('refuses a save from a FUTURE version rather than misreading it', () => {
-    const store = makeStore();
-    const v9 = JSON.stringify({ e: 'kitsave1', v: 9, d: { totalLaps: 1 } });
-    const result = store.import(v9, { save: false });
-    expect(result.ok).toBe(false);
-    expect(result.error).toMatch(/newer version/);
-    expect(store.data.totalLaps).toBe(0);        // live data untouched
-  });
-
-  it('rejects junk without throwing', () => {
-    const store = makeStore();
-    expect(store.import('not json at all', { save: false }).ok).toBe(false);
-    expect(store.data.totalLaps).toBe(0);
-  });
-
-  it('accepts a bare pre-kit object and merges it over defaults', () => {
-    const store = makeStore();
-    const result = store.import(JSON.stringify({ laps: 7 }), { save: false });
-    expect(result.ok).toBe(true);
-    expect(store.data.totalLaps).toBe(7);
+describe('reset', () => {
+  it('returns to a known state so a run can be driven from tick zero', () => {
+    const sim = run('brimtoveharn', 800);
+    resetSim(sim, 'brimtoveharn');
+    expect(sim.tick).toBe(0);
+    expect(sim.cells.length).toBe(CFG.seedCount);
+    expect(sim.bonds.length).toBe(0);
+    expect(sim.totalFractures).toBe(0);
   });
 });
