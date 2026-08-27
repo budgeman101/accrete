@@ -223,6 +223,126 @@ describe('rule 5 — a cell senses the world and pushes along what it reads', ()
   });
 });
 
+/* ── the instrument ─────────────────────────────────────────────────────────
+   A warning in a design doc is not a check. These test the MEASURING, not the
+   world — because the failure that cost the most in this project was a metric
+   that scored its best number ever on a run that was visibly worse, and a
+   regrowth model whose shape forbade the phenomenon it was supposed to produce.
+   Both were written down as risks first. Neither was executable. */
+
+describe('the instrument itself', () => {
+  const blankSim = () => {
+    const sim = createSim('brimtoveharn');
+    sim.cells.length = 0;
+    sim.bonds.length = 0;
+    return sim;
+  };
+  const n = () => CFG.fieldSize;
+
+  it('patch count tells ONE stripped half from MANY clearings; sd cannot', () => {
+    const N = n();
+
+    const halved = blankSim();
+    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) halved.field[y * N + x] = x < N / 2 ? 0 : CFG.fieldMax;
+
+    const speckled = blankSim();
+    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+      const blockish = (Math.floor(x / 2) + Math.floor(y / 2)) % 2 === 0;
+      speckled.field[y * N + x] = blockish ? 0 : CFG.fieldMax;
+    }
+
+    const a = stats(halved);
+    const b = stats(speckled);
+
+    // sd is blind to the difference: both are half bare, half full
+    expect(Math.abs(a.fieldSd - b.fieldSd)).toBeLessThan(CFG.fieldMax * 0.05);
+    // patch count is not
+    expect(a.patchCount).toBe(1);
+    expect(b.patchCount).toBeGreaterThan(20);
+  });
+
+  it('REGROWTH MUST NOT BE FASTEST AT ZERO — the shape that forbade deserts', () => {
+    /* Growing back by a fraction of the shortfall peaks at empty, so nothing can
+       ever stay ruined and the world converges on one uniformly cropped flux.
+       This test fails the moment anyone writes that model again. */
+    CFG.diffuse = 0;
+    const sim = blankSim();
+    const levels = [0, 0.25, 0.5, 0.75, 1].map((f) => f * CFG.fieldMax);
+    for (let i = 0; i < levels.length; i++) sim.field[i] = levels[i]!;
+    const before = levels.slice();
+    tick(sim, 1 / 60);
+    const growth = levels.map((_, i) => sim.field[i]! - before[i]!);
+
+    expect(growth[0]).toBe(0);                              // bare ground is dead ground
+    expect(growth[2]).toBeGreaterThan(growth[1]!);          // fastest in the middle
+    expect(growth[2]).toBeGreaterThan(growth[3]!);
+    expect(growth[4]).toBeCloseTo(0, 6);                    // and nothing left to gain when full
+  });
+});
+
+/* ── claims that were only prose ────────────────────────────────────────── */
+
+describe('claims the design makes, now checked', () => {
+  it('being a group COSTS — more mouths draw on one patch', () => {
+    const sim = run('brimtoveharn', 9000);
+    const grouped = sim.cells.filter((c) => sim.clusterSizeOf[c.cluster]! > 1);
+    const solitary = sim.cells.filter((c) => sim.clusterSizeOf[c.cluster] === 1);
+    if (grouped.length > 10 && solitary.length > 10) {
+      const mean = (a: typeof sim.cells) => a.reduce((s, c) => s + c.reserve, 0) / a.length;
+      expect(mean(grouped)).toBeLessThan(mean(solitary));
+    }
+  });
+
+  it('movement enriches the INDIVIDUAL and impoverishes the WORLD', () => {
+    /* The doc called this "self-defeating", and the measurement says that was
+       wrong: a cell that can move stands on BETTER ground (2.79 against 2.15),
+       which is exactly why the behaviour would ever be selected for. What gets
+       poorer is the world — foragers extract more of it. That is a commons
+       problem, not a self-defeating one, and the two halves pull opposite ways,
+       which is the interesting part and the thing worth holding on to. */
+    const under = (sim: Sim) =>
+      sim.cells.reduce((s, c) => s + substrateAt(sim, c.x, c.y), 0) / sim.cells.length;
+    CFG.taxis = 0;
+    const still = run('brimtoveharn', 6000);
+    Object.assign(CFG, BASE);
+    const moving = run('brimtoveharn', 6000);
+
+    expect(under(moving)).toBeGreaterThan(under(still));          // better off individually
+    expect(stats(moving).fieldMean).toBeLessThan(stats(still).fieldMean); // world poorer
+  });
+
+  it('THERE IS AN OPTIMUM IN MOVEMENT — it is not a ramp to the ceiling', () => {
+    /* An unopposed gene is a constant with a delay. This is the check that taxis
+       will be worth evolving rather than worth maxing. */
+    const chosen = run('brimtoveharn', 6000).cells.length;
+    Object.assign(CFG, BASE);
+    CFG.taxis = BASE.taxis * 40;
+    const frantic = run('brimtoveharn', 6000).cells.length;
+    expect(frantic).toBeLessThan(chosen);
+  });
+
+  it('a patch both falls and recovers — local boom and bust, not a one-way strip', () => {
+    const sim = createSim('brimtoveharn');
+    const watch = new Array(CFG.fieldSize ** 2).fill(0).map((_, i) => i).filter((_, i) => i % 37 === 0);
+    const lo = new Map<number, number>();
+    const hi = new Map<number, number>();
+    let anyRecovered = false;
+    for (let i = 0; i < 14000; i++) {
+      tick(sim, 1 / 60);
+      if (i % 25) continue;
+      for (const idx of watch) {
+        const v = sim.field[idx]!;
+        const l = Math.min(lo.get(idx) ?? v, v);
+        lo.set(idx, l);
+        hi.set(idx, Math.max(hi.get(idx) ?? v, v));
+        // fell a long way and then climbed a long way back out of it
+        if (l < CFG.fieldMax * 0.25 && v > l + CFG.fieldMax * 0.35) anyRecovered = true;
+      }
+    }
+    expect(anyRecovered).toBe(true);
+  });
+});
+
 describe('reset', () => {
   it('returns to a known state so a run can be driven from tick zero', () => {
     const sim = run('brimtoveharn', 2000);
