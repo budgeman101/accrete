@@ -17,7 +17,8 @@
     "e2e": "playwright test",
     "shot": "node scripts/shot.mjs",
     "share": "node scripts/share.mjs",
-    "refresh": "node scripts/refresh.mjs"
+    "refresh": "node scripts/refresh.mjs",
+    "test:quick": "vitest run tests/sim.test.ts"
   },
   "dependencies": {
     "howler": "^2.2.4",

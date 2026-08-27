@@ -33,6 +33,11 @@ import { CFG } from './cfg.js';
 import { makeRng, type Rng } from '../kit/rng.js';
 
 export interface Cell {
+  /** Stable for the cell's whole life. Array indices are NOT: cells are removed
+      on death and compacted, and new ones are appended, so `cells[i]` is a
+      different creature a hundred ticks later. Anything that follows an
+      individual — drift, lineage, age — has to key on this. */
+  id: number;
   x: number;
   y: number;
   /** Force accumulator, cleared every substep. */
@@ -45,6 +50,10 @@ export interface Cell {
       substep. Charged for in metabolise. */
   px: number;
   py: number;
+  /** Force the current is putting on it — rule 4. Not charged for: the world
+      does this to you, it is not something you spend. */
+  qx: number;
+  qy: number;
   /** How many cells are touching it, counted during the force pass. Free there,
       and it is the sense that tells an interior cell it is interior. */
   crowding: number;
@@ -164,9 +173,29 @@ function drawFrom(sim: Sim, x: number, y: number, amount: number): number {
   return got;
 }
 
+/* ── rule 4: the current ────────────────────────────────────────────────────
+   A divergence-free flow from the stream function
+       psi = A sin(kx + wt) sin(ky - 0.7wt),   v = (dpsi/dy, -dpsi/dx)
+   so it swirls and carries nothing out of the world. The phase drifts, because
+   a static pattern would be permanent sheltered ground handed out by the
+   designer rather than earned. */
+export function flowAt(x: number, y: number, t: number): { vx: number; vy: number } {
+  if (CFG.flowSpeed === 0) return { vx: 0, vy: 0 };
+  const k = (Math.PI * 2) / CFG.flowScale;
+  const w = CFG.flowDrift;
+  const a = k * x + w * t;
+  const b = k * y - 0.7 * w * t;
+  const A = (CFG.flowSpeed * CFG.flowScale) / (Math.PI * 2);
+  return {
+    vx: A * k * Math.sin(a) * Math.cos(b),
+    vy: -A * k * Math.cos(a) * Math.sin(b),
+  };
+}
+
 export function createSim(seed: string): Sim {
   const rng = makeRng(seed);
   const place = rng.fork('place');
+  nextId = 1; // ids restart with the world, so a seeded replay is identical
 
   const field = new Float32Array(CFG.fieldSize * CFG.fieldSize).fill(CFG.fieldMax);
 
@@ -198,14 +227,19 @@ export function createSim(seed: string): Sim {
   return sim;
 }
 
+let nextId = 1;
+
 function makeCell(x: number, y: number, birthTick: number, reserve = CFG.reserveMax * CFG.reserveAtBirth): Cell {
   return {
+    id: nextId++,
     x,
     y,
     fx: 0,
     fy: 0,
     px: 0,
     py: 0,
+    qx: 0,
+    qy: 0,
     crowding: 0,
     r: CFG.cellRadius,
     reserve,
@@ -250,14 +284,28 @@ export function tick(sim: Sim, dt: number): void {
    this much. A negative strength would push the other way and everything would
    starve, and no rule in this file would object. */
 function sense(sim: Sim): void {
-  if (CFG.taxis === 0) {
-    for (const c of sim.cells) { c.px = 0; c.py = 0; }
-    return;
-  }
   for (const c of sim.cells) {
-    const g = gradientAt(sim, c.x, c.y);
-    c.px = CFG.taxis * g.gx;
-    c.py = CFG.taxis * g.gy;
+    if (CFG.taxis === 0) {
+      c.px = 0;
+      c.py = 0;
+    } else {
+      const g = gradientAt(sim, c.x, c.y);
+      c.px = CFG.taxis * g.gx;
+      c.py = CFG.taxis * g.gy;
+    }
+
+    /* Rule 4. Crowding is last tick's count, which is what makes this cheap —
+       and a tick of lag on how sheltered you are is not a distinction anything
+       in this world could notice. */
+    if (CFG.drag === 0 || CFG.flowSpeed === 0) {
+      c.qx = 0;
+      c.qy = 0;
+    } else {
+      const v = flowAt(c.x, c.y, sim.tick);
+      const shelter = CFG.drag / (1 + CFG.shelter * c.crowding);
+      c.qx = shelter * v.vx;
+      c.qy = shelter * v.vy;
+    }
   }
 }
 
@@ -271,8 +319,8 @@ function accumulateForces(sim: Sim): void {
     const c = cells[i]!;
     // propulsion is a force like any other, so it argues with repulsion and with
     // whatever a cell is bonded to rather than overriding them
-    c.fx = c.px;
-    c.fy = c.py;
+    c.fx = c.px + c.qx;
+    c.fy = c.py + c.qy;
     c.crowding = 0;
   }
 
@@ -393,7 +441,9 @@ function metabolise(sim: Sim): void {
   for (const c of sim.cells) {
     const want = Math.min(CFG.drawRate, CFG.reserveMax - c.reserve);
     if (want > 0) c.reserve += drawFrom(sim, c.x, c.y, want);
-    c.reserve -= CFG.upkeep + CFG.moveCost * Math.hypot(c.px, c.py);
+    // upkeep is paid across EXPOSED surface: neighbours shelter you from it
+    const exposed = 1 / (1 + CFG.upkeepShelter * c.crowding);
+    c.reserve -= CFG.upkeep * exposed + CFG.moveCost * Math.hypot(c.px, c.py);
     if (c.reserve <= 0) {
       c.alive = false;
       sim.deathsThisTick++;

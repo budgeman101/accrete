@@ -81,7 +81,7 @@ export const CFG = {
   /** Field width and height in field cells. Outside it there is no substrate at
       all, so the world is bounded by starvation rather than by a wall — nothing
       needs a special case for the edge. */
-  fieldSize: 40,
+  fieldSize: 28,
   /** Substrate a full field cell holds. Stock, not rate: this is how long a
       patch can carry a cell before regeneration is all there is. */
   fieldMax: 20,
@@ -113,8 +113,25 @@ export const CFG = {
       the field stays strongly patchy (8.97) and healthier (11.4 of 20) while
       supporting half again as many cells as no diffusion at all. */
   diffuse: 0.002,
-  /** What a cell spends per tick simply existing. Death by neglect lives here:
-      stand still, spoil your patch, and this number kills you. */
+  /** How much each neighbour reduces upkeep — surface-to-volume, which is the
+      classic reason for being bigger and the thing that finally makes clustering
+      WORTH something here.
+
+      Loss happens across exposed surface, and an interior cell has less of it.
+      That is a statement about how loss works, not a rule about groups: it makes
+      no reference to clusters or bonds, and a cell packed among strangers gets
+      the same break. What makes it select for STICKINESS specifically is rule 4 —
+      the current pulls loose clumps apart, so only a bonded group keeps the
+      shelter it has.
+
+      The first attempt at rule 4 failed for a reason worth keeping: shelter from
+      DRAG lets a big lump hold station, and holding station is worthless in a
+      world where presence spoils the ground. Rule 3 makes staying put lethal;
+      that version of rule 4 rewarded it. They were fighting. */
+  upkeepShelter: 0.22,
+  /** What a cell spends per tick simply existing, fully exposed. Death by
+      neglect lives here: stand still, spoil your patch, and this number kills
+      you. */
   upkeep: 0.0267,
   /** The most a cell can pull out of its field cell per tick. Caps how fast a
       rich patch can be stripped, and is what makes crowding onto one good spot
@@ -159,15 +176,55 @@ export const CFG = {
       ramp to run to the ceiling. */
   moveCost: 0.002,
 
+  // ---- rule 4: one force whose effect depends on size ----
+  /* Without this the physics is scale-invariant: being bigger buys nothing, so
+     nothing ever pays for the first cluster and stickiness has no reason to
+     exist. A current, not settling — settling only selected anything in the lab
+     because a TRANSFER STEP did the culling, and with no transfer, sinking fast
+     just means being at the bottom.
+
+     The whole mechanism is SHELTER. A current that pushes every cell equally
+     moves a cluster exactly as fast as a lone cell and changes nothing. It is
+     only when interior cells are shielded that force scales with a lump's
+     PERIMETER while being shared across its AREA — so big things hold station
+     and small things wash off. That is what makes a good patch worth being big
+     on. */
+
+  /** Force per unit of flow speed on a fully exposed cell. Zero = no current.
+
+      MEASURED at equilibrium over two seeds. The clustering edge grows with it —
+      +5% at 70, +10% at 160, +122% at 320 — but so does the damage: patch
+      structure falls from 5.3 regions to 2.9 to 2.6, and the world flattens.
+      Held at 70, because s = 0.05 is already a very strong selection coefficient
+      and the rest is overkill that wrecks the thing you would be watching. */
+  drag: 70,
+  /** How much each neighbour shelters you. Force is divided by (1 + shelter x
+      crowding), so an interior cell feels almost nothing. */
+  shelter: 0.55,
+  /** Flow speed. The field is a divergence-free swirl from a stream function, so
+      it circulates rather than sweeping everything into a corner. */
+  flowSpeed: 1,
+  /** Size of the swirl cells, in world units. */
+  flowScale: 420,
+  /** How fast the pattern drifts. NOT zero: a static flow would hand out
+      permanently sheltered real estate, which is designer-supplied spatial
+      structure of exactly the kind this project refuses. Drifting means holding
+      station has to be earned by being big, not by being lucky. */
+  flowDrift: 0.0016,
+
   // ---- the run ----
   /** Hard ceiling so a runaway can't hang the tab. Not a biological limit. */
   maxCells: 4000,
-  /** Cells seeded at the start, scattered in a disc of this radius. Seeded ACROSS
-      the world rather than in one clump: with no way to move yet, colonisation
-      spreads only as fast as budding carries a daughter 10 units at a time, and
-      from one clump the world would still be mostly empty after 20,000 ticks. */
-  seedCount: 60,
-  seedSpread: 480,
+  /** Cells seeded at the start, scattered in a disc of this radius.
+
+      SEEDED ACROSS THE WHOLE WORLD, and this matters more than it looks. Started
+      from a clump, the run spends tens of thousands of ticks COLONISING, and
+      every measurement taken during that is a measurement of colonisation rather
+      than of the ecology. It bit: "does stickiness pay" came out YES at 14,000
+      ticks and NO at 9,000, because neither was near equilibrium. Seeding
+      everywhere deletes the transient and lets a run settle in a few thousand. */
+  seedCount: 200,
+  seedSpread: 400,
   /** Physics substeps per tick. More = stiffer springs stay stable. */
   substeps: 4,
   /** Hard cap on how far one cell may move in one substep, as a fraction of its
