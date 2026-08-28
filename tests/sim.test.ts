@@ -8,7 +8,8 @@
    Run: npm test */
 
 import { afterEach, describe, expect, it } from 'vitest';
-import { createSim, flowAt, gradientAt, resetSim, stats, substrateAt, tick, type Sim } from '../src/game/sim.js';
+import { createSim, flowAt, gradientAt, resetSim, startingGenes, stats, substrateAt, tick, type Sim } from '../src/game/sim.js';
+import { makeRng } from '../src/kit/rng.js';
 import { CFG } from '../src/game/cfg.js';
 
 /* A smaller world than the real one: these tests need thousands of ticks. Set
@@ -137,6 +138,8 @@ describe('rule 1 — the world keeps what agents do to it', () => {
 
 describe('rule 2 — separation can fail, and crowding tears the result apart', () => {
   it('with stickiness 0 every cell is its own cluster, and nothing can fracture', () => {
+    // mutation off: CFG only sets where a world STARTS, and this isolates rule 2
+    CFG.mutStickiness = 0;
     CFG.stickiness = 0;
     const sim = run('brimtoveharn', 4000);
     expect(sim.cells.length).toBeGreaterThan(0);
@@ -166,10 +169,16 @@ describe('rule 2 — separation can fail, and crowding tears the result apart', 
 /* ── rule 5 ─────────────────────────────────────────────────────────────── */
 
 describe('rule 5 — a cell senses the world and pushes along what it reads', () => {
-  it('with taxis 0 nothing moves under its own power', () => {
+  it('with taxis off, nothing moves under its own power', () => {
+    /* Not exactly zero: ratio genes carry a small floor, because a multiplicative
+       mutation cannot leave zero and a gene that reaches it would be switched off
+       forever. So "off" means negligible, and the floor is four orders of
+       magnitude below the working value. */
+    CFG.mutRatio = 0;
     CFG.taxis = 0;
     const sim = run('brimtoveharn', 500);
-    expect(sim.cells.every((c) => c.px === 0 && c.py === 0)).toBe(true);
+    const worst = Math.max(...sim.cells.map((c) => Math.hypot(c.px, c.py)));
+    expect(worst).toBeLessThan(1e-3);
   });
 
   it('a cell climbs a gradient — and it is a reading, not an instruction', () => {
@@ -362,6 +371,72 @@ describe('claims the design makes, now checked', () => {
       }
     }
     expect(anyRecovered).toBe(true);
+  });
+});
+
+/* ── the genome ─────────────────────────────────────────────────────────── */
+
+describe('genes are carried by the cell, not read from config', () => {
+  it('a daughter inherits its parent, with error', () => {
+    const sim = run('brimtoveharn', 4000);
+    expect(sim.cells.length).toBeGreaterThan(20);
+    const spread = (pick: (c: (typeof sim.cells)[number]) => number) => {
+      const v = sim.cells.map(pick);
+      const m = v.reduce((a, b) => a + b, 0) / v.length;
+      return Math.sqrt(v.reduce((a, b) => a + (b - m) ** 2, 0) / v.length);
+    };
+    // variation exists at all (mutation happened) and has not exploded
+    expect(spread((c) => c.genes.stickiness)).toBeGreaterThan(0.005);
+    expect(spread((c) => c.genes.taxis)).toBeGreaterThan(0);
+  });
+
+  it('a bond takes its strength from the DAUGHTER genes, not from CFG', () => {
+    const sim = run('brimtoveharn', 4000);
+    const live = sim.bonds.filter((b) => b.live);
+    expect(live.length).toBeGreaterThan(5);
+    const fromCfg = CFG.stickiness * CFG.bondStrengthMax;
+    // at least some bond differs from what the config alone would have produced
+    expect(live.some((b) => Math.abs(b.strength - fromCfg) > 1e-6)).toBe(true);
+  });
+
+  it('a world seeded unicellular can still discover adhesion', () => {
+    /* Multiplicative mutation on a proportion can never leave zero, so a world
+       seeded at stickiness 0 could never become multicellular however long it
+       ran — the model would forbid the phenomenon. Stickiness mutates additively
+       for exactly this reason. */
+    CFG.stickiness = 0;
+    const sim = run('brimtoveharn', 3000);
+    expect(sim.cells.some((c) => c.genes.stickiness > 0)).toBe(true);
+  });
+});
+
+describe('the instrument, again: a bounded gene drifts off its boundary', () => {
+  it('RISING FROM ZERO IS NOT EVIDENCE OF SELECTION', () => {
+    /* With no world and no selection at all, a gene seeded at 0 and mutated
+       symmetrically still climbs: negative steps clamp at the boundary and
+       positive ones accumulate. A ratchet, not a preference.
+
+       This caught a real result: stickiness rose from 0 in every condition,
+       INCLUDING both controls, and none of it meant anything. Experiments on a
+       bounded gene have to be seeded mid-range, or compared between conditions —
+       never read as an absolute. */
+    const rng = makeRng('driftcheck');
+    let pop = new Array(400).fill(0);
+    for (let gen = 0; gen < 200; gen++) {
+      pop = pop.map((v) => Math.max(0, Math.min(1, v + rng.gauss(0, CFG.mutStickiness))));
+    }
+    const mean = pop.reduce((a, b) => a + b, 0) / pop.length;
+    expect(mean).toBeGreaterThan(0.1); // climbed a long way, with nothing selecting for it
+  });
+
+  it('and seeded mid-range it does not drift in either direction', () => {
+    const rng = makeRng('driftcheck');
+    let pop = new Array(400).fill(0.5);
+    for (let gen = 0; gen < 200; gen++) {
+      pop = pop.map((v) => Math.max(0, Math.min(1, v + rng.gauss(0, CFG.mutStickiness))));
+    }
+    const mean = pop.reduce((a, b) => a + b, 0) / pop.length;
+    expect(Math.abs(mean - 0.5)).toBeLessThan(0.08);
   });
 });
 

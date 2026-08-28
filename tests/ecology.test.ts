@@ -53,8 +53,50 @@ function equilibrium(over: Partial<typeof CFG>, settle = 5000, window = 5000, ev
   return { pop: pop / n, field: field / n, under: under / n };
 }
 
-describe('what makes composition pay', () => {
-  it('STICKINESS PAYS — and only because BOTH halves of rule 4 are present', () => {
+/** Two lineages in ONE world, mutation off. This is the instrument that matters:
+    what a gene does in competition, not what a world of them looks like. */
+function compete(over: Partial<typeof CFG>, sticky = 0.7, ticks = 20000) {
+  let sum = 0;
+  for (const seed of SEEDS) {
+    Object.assign(CFG, BASE, { mutStickiness: 0, mutRatio: 0 }, over);
+    const sim = createSim(seed);
+    sim.cells.forEach((c, i) => { c.genes.stickiness = i % 2 ? sticky : 0; });
+    for (let i = 0; i < ticks; i++) {
+      tick(sim, 1 / 60);
+      if (!sim.cells.length) break;
+    }
+    sum += sim.cells.length
+      ? sim.cells.filter((c) => c.genes.stickiness > sticky / 2).length / sim.cells.length
+      : 0;
+  }
+  return sum / SEEDS.length;
+}
+
+describe('what makes composition pay — and what it does not', () => {
+  it('A STICKY WORLD IS BIGGER, WHICH IS NOT THE SAME AS STICKINESS PAYING', () => {
+    /* THE CENTRAL FINDING SO FAR, and the error it corrects is mine.
+
+       Between worlds, an all-sticky population supports about 5% more cells than
+       an all-loose one, and that was taken as rule 4 doing its job. But selection
+       acts WITHIN a world. Put both lineages in one world and loose wins at every
+       setting tested — 36% sticky with no current, 25% at drag 70, 0% at drag 320
+       with no surface saving. A cell packed among strangers gets the shelter for
+       free; it never needed the bond, and a bonded cell is dragged about by
+       partners it cannot leave.
+
+       So the population-level advantage is a GROUP effect, and the world's answer
+       to "does multicellularity evolve here" is currently NO. Both facts are
+       asserted together, because holding only the first is what produced a
+       confident wrong conclusion. */
+    const world = {
+      loose: equilibrium({ stickiness: 0 }).pop,
+      sticky: equilibrium({ stickiness: 1 }).pop,
+    };
+    expect(world.sticky).toBeGreaterThan(world.loose); // a sticky WORLD is bigger
+    expect(compete({})).toBeLessThan(0.5);             // a sticky CELL still loses
+  }, 900_000);
+
+  it('and the between-world effect really does need both halves of rule 4', () => {
     /* The central question of the project depends on this. Rule 2 makes clusters
        possible and rule 3 makes them expensive; if nothing makes them worth
        having, a genome will let stickiness drift wherever it likes and

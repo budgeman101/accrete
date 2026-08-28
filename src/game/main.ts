@@ -172,7 +172,7 @@ async function boot() {
     let sim: Sim;
     let view: View;
     let cam: ReturnType<typeof createCamera>;
-    let hud: { rCells: any; rClusters: any; rLargest: any; rDeaths: any; mPatch: any };
+    let hud: { rCells: any; rClusters: any; rLargest: any; rDeaths: any; rSticky: any; mPatch: any; mSticky: any };
 
     return {
       // getters, so DBG.sim reaches the CURRENT scene's state
@@ -202,15 +202,20 @@ async function boot() {
         const rClusters = readout({ label: 'Clusters', value: '0' });
         const rLargest = readout({ label: 'Largest', value: '0' });
         const rDeaths = readout({ label: 'Died', value: '0' });
+        const rSticky = readout({ label: 'Stickiness', value: '0.00' });
         const rSeed = readout({ label: 'Seed', value: seed });
         const topLeft = overlay('top-left', { row: true });
-        topLeft.append(rCells, rClusters, rLargest, rDeaths, rSeed);
+        topLeft.append(rCells, rClusters, rLargest, rDeaths, rSticky, rSeed);
 
         /* Patchiness starts at exactly zero and everything above it was made by
            the cells — so this meter is the one readout that shows a rule
            producing something nobody supplied. */
         const mPatch = meter({ label: 'Patchiness (made by them)', value: 0 });
-        const side = panel({ title: null, children: [mPatch] });
+        /* The central question, live. Seeded unicellular, this rising IS
+           multicellularity evolving; it falling back to zero is the world
+           answering no. */
+        const mSticky = meter({ label: 'In a cluster', value: 0 });
+        const side = panel({ title: null, children: [mPatch, mSticky] });
         side.style.width = '190px';
         const bottomLeft = overlay('bottom-left');
         bottomLeft.append(side);
@@ -223,7 +228,7 @@ async function boot() {
         );
 
         ctx.el.append(topLeft, bottomLeft, topRight);
-        hud = { rCells, rClusters, rLargest, rDeaths, mPatch };
+        hud = { rCells, rClusters, rLargest, rDeaths, rSticky, mPatch, mSticky };
       },
 
       update(dt: number) {
@@ -250,6 +255,8 @@ async function boot() {
         hud.rClusters.set(s.clusters);
         hud.rLargest.set(s.largest);
         hud.rDeaths.set(s.totalDeaths);
+        hud.rSticky.set(s.geneStickiness.toFixed(2));
+        hud.mSticky.set(s.clusteredFraction);
         // sd of a uniform-ish field tops out well under a quarter of full
         hud.mPatch.set(Math.min(1, s.fieldSd / (CFG.fieldMax * 0.25)));
       },
@@ -329,6 +336,8 @@ async function boot() {
         largest: sim?.clusterSizes[0] ?? 0,
         fractures: sim?.totalFractures ?? 0,
         deaths: sim?.totalDeaths ?? 0,
+        stickiness: sim ? +stats(sim).geneStickiness.toFixed(4) : 0,
+        clustered: sim ? +stats(sim).clusteredFraction.toFixed(3) : 0,
         fieldSd: sim ? +stats(sim).fieldSd.toFixed(3) : 0,
         seed: sim?.seed ?? '',
       };

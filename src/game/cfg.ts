@@ -142,8 +142,18 @@ export const CFG = {
   /** Reserve a new cell starts with, as a fraction of reserveMax. */
   reserveAtBirth: 0.4,
   /** Reserve at which a cell divides, as a fraction of reserveMax. The parent
-      and daughter split what the parent had. Above 1 nothing ever buds. */
+      and daughter split what the parent had, less the division cost. */
   budThreshold: 0.92,
+  /** Material spent building a new cell, regardless of how big its share is.
+
+      WITHOUT THIS, budThreshold is the degenerate dial. Dividing earlier always
+      wins in the short run, so it evolved straight down to 0.11 — cells splitting
+      at almost no reserve, a population spike to the cap, and extinction. Twice,
+      in both conditions. A fixed overhead means dividing while poor wastes most
+      of what you spend, so there is an OPTIMUM to find rather than a floor to
+      race to. It is also just true: a new cell costs a membrane whatever else
+      it gets. */
+  divisionCost: 1.1,
 
   // ---- rule 5: sensing, and the one verb that costs ----
   /* A cell reads the substrate gradient where it stands and pushes along it.
@@ -211,6 +221,25 @@ export const CFG = {
       structure of exactly the kind this project refuses. Drifting means holding
       station has to be earned by being big, not by being lucky. */
   flowDrift: 0.0016,
+
+  // ---- stage 5: the genome ----
+  /* Four traits are now carried by the cell and inherited, not read from here.
+     The values below are only where a seeded world STARTS.
+
+     This is a scalar genome, and the doc is owed the real one: genes should be
+     functions of sensed state computed by an unbounded graph, not a fixed list
+     of dials — a fixed list is the very trap this project was started over. It
+     is staged this way because a scalar genome is the smallest thing that can
+     answer the central question, and answering that is what the project is for. */
+
+  /** Standard deviation of the additive mutation on stickiness, which lives in
+      [0,1]. ADDITIVE, not multiplicative: a proportion that starts at zero can
+      never leave zero under a multiplicative step, and a world seeded
+      unicellular could then never discover adhesion at all. */
+  mutStickiness: 0.035,
+  /** Log-normal spread for the ratio-valued genes. Multiplicative, so that a
+      halving and a doubling are the same size of change. */
+  mutRatio: 0.07,
 
   // ---- the run ----
   /** Hard ceiling so a runaway can't hang the tab. Not a biological limit. */

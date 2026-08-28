@@ -32,6 +32,27 @@
 import { CFG } from './cfg.js';
 import { makeRng, type Rng } from '../kit/rng.js';
 
+/* ── the genome ─────────────────────────────────────────────────────────────
+   Carried by the cell, copied to its daughter with error. Nothing here is read
+   from CFG at run time — CFG only says where a fresh world starts.
+
+   These are the traits the PHYSICS reads. They are not chosen from a menu of
+   possible genes: each exists because a rule consumes it, which is the same
+   argument as world-constants-versus-genes. What is still owed is that each
+   should be a FUNCTION of what the cell senses rather than a number. */
+export interface Genes {
+  /** 0 = daughters separate cleanly. Above 0 they stay bonded, at this fraction
+      of bondStrength. The gene the whole project is a question about. */
+  stickiness: number;
+  /** Tension the bond survives at stickiness 1. */
+  bondStrength: number;
+  /** Propulsion per unit of substrate gradient. Has a measured optimum, so this
+      is also the check that evolution finds a shape rather than a ceiling. */
+  taxis: number;
+  /** Reserve at which the cell divides, as a fraction of reserveMax. */
+  budThreshold: number;
+}
+
 export interface Cell {
   /** Stable for the cell's whole life. Array indices are NOT: cells are removed
       on death and compacted, and new ones are appended, so `cells[i]` is a
@@ -59,6 +80,7 @@ export interface Cell {
   crowding: number;
   /** Which connected component it is in this tick. Derived, never authoritative. */
   cluster: number;
+  genes: Genes;
   /** Lineage and colour only — never read by the physics. */
   birthTick: number;
   alive: boolean;
@@ -229,9 +251,30 @@ export function createSim(seed: string): Sim {
 
 let nextId = 1;
 
-function makeCell(x: number, y: number, birthTick: number, reserve = CFG.reserveMax * CFG.reserveAtBirth): Cell {
+export function startingGenes(): Genes {
+  return {
+    stickiness: CFG.stickiness,
+    bondStrength: CFG.bondStrengthMax,
+    taxis: CFG.taxis,
+    budThreshold: CFG.budThreshold,
+  };
+}
+
+/** Copy with error. Additive on the [0,1] proportion, multiplicative on ratios. */
+function mutate(g: Genes, rng: Rng): Genes {
+  const ratio = (v: number) => Math.max(1e-4, v * Math.exp(rng.gauss(0, CFG.mutRatio)));
+  return {
+    stickiness: Math.max(0, Math.min(1, g.stickiness + rng.gauss(0, CFG.mutStickiness))),
+    bondStrength: ratio(g.bondStrength),
+    taxis: ratio(g.taxis),
+    budThreshold: Math.max(0.05, Math.min(1, g.budThreshold + rng.gauss(0, CFG.mutStickiness))),
+  };
+}
+
+function makeCell(x: number, y: number, birthTick: number, reserve = CFG.reserveMax * CFG.reserveAtBirth, genes: Genes = startingGenes()): Cell {
   return {
     id: nextId++,
+    genes,
     x,
     y,
     fx: 0,
@@ -285,13 +328,13 @@ export function tick(sim: Sim, dt: number): void {
    starve, and no rule in this file would object. */
 function sense(sim: Sim): void {
   for (const c of sim.cells) {
-    if (CFG.taxis === 0) {
+    if (c.genes.taxis === 0) {
       c.px = 0;
       c.py = 0;
     } else {
       const g = gradientAt(sim, c.x, c.y);
-      c.px = CFG.taxis * g.gx;
-      c.py = CFG.taxis * g.gy;
+      c.px = c.genes.taxis * g.gx;
+      c.py = c.genes.taxis * g.gy;
     }
 
     /* Rule 4. Crowding is last tick's count, which is what makes this cheap —
@@ -460,25 +503,31 @@ function metabolise(sim: Sim): void {
 function grow(sim: Sim): void {
   const budRng = sim.budRng;
   const n = sim.cells.length;
-  const threshold = CFG.reserveMax * CFG.budThreshold;
   for (let i = 0; i < n; i++) {
     const parent = sim.cells[i]!;
-    if (!parent.alive || parent.reserve < threshold) continue;
+    // must clear both its own threshold AND the fixed cost of building a cell
+    if (!parent.alive) continue;
+    if (parent.reserve < CFG.reserveMax * parent.genes.budThreshold) continue;
+    if (parent.reserve <= CFG.divisionCost) continue;
     if (sim.cells.length >= CFG.maxCells) break;
 
     const a = budRng.range(0, Math.PI * 2);
     const d = (parent.r + CFG.cellRadius) * CFG.budOffset; // touching, not inside
-    const share = parent.reserve / 2;
+    const share = (parent.reserve - CFG.divisionCost) / 2;
     parent.reserve = share;
-    const child = makeCell(parent.x + Math.cos(a) * d, parent.y + Math.sin(a) * d, sim.tick, share);
+    const genes = mutate(parent.genes, budRng);
+    const child = makeCell(parent.x + Math.cos(a) * d, parent.y + Math.sin(a) * d, sim.tick, share, genes);
     const idx = sim.cells.push(child) - 1;
     sim.birthsThisTick++;
 
-    if (CFG.stickiness > 0) {
+    /* Whether the daughter stays attached is now the DAUGHTER's gene, mutated
+       from its parent's. A world seeded unicellular can discover adhesion, and a
+       world where adhesion does not pay can lose it again. */
+    if (genes.stickiness > 0) {
       sim.bonds.push({
         a: i,
         b: idx,
-        strength: CFG.stickiness * CFG.bondStrengthMax,
+        strength: genes.stickiness * genes.bondStrength,
         tension: 0,
         live: true,
       });
@@ -652,6 +701,16 @@ export interface Stats {
       is the signature of a world being grazed uniformly bare. */
   meanPatchSize: number;
   meanReserve: number;
+  /** Population means of every gene — the readout the central question is asked
+      through. Stickiness rising from a unicellular start IS multicellularity
+      evolving; stickiness falling to zero is the world answering no. */
+  geneStickiness: number;
+  geneStickinessSd: number;
+  geneBondStrength: number;
+  geneTaxis: number;
+  geneBudThreshold: number;
+  /** Share of cells that are in a cluster of more than one. */
+  clusteredFraction: number;
 }
 
 export function stats(sim: Sim): Stats {
@@ -693,6 +752,17 @@ export function stats(sim: Sim): Stats {
     }
   }
 
+  const nc = sim.cells.length;
+  const gmean = (pick: (g: Genes) => number) =>
+    nc ? sim.cells.reduce((a, c) => a + pick(c.genes), 0) / nc : 0;
+  const gs = gmean((g) => g.stickiness);
+  const gsSd = nc
+    ? Math.sqrt(sim.cells.reduce((a, c) => a + (c.genes.stickiness - gs) ** 2, 0) / nc)
+    : 0;
+  const clustered = nc
+    ? sim.cells.reduce((a, c) => a + ((sim.clusterSizeOf[c.cluster] ?? 1) > 1 ? 1 : 0), 0) / nc
+    : 0;
+
   return {
     cells: sim.cells.length,
     clusters: sizes.length,
@@ -705,6 +775,12 @@ export function stats(sim: Sim): Stats {
     fieldSd: f.length ? Math.sqrt(vs / f.length) : 0,
     patchCount,
     meanPatchSize: patchCount ? patchCells / patchCount : 0,
+    geneStickiness: gs,
+    geneStickinessSd: gsSd,
+    geneBondStrength: gmean((g) => g.bondStrength),
+    geneTaxis: gmean((g) => g.taxis),
+    geneBudThreshold: gmean((g) => g.budThreshold),
+    clusteredFraction: clustered,
     meanReserve: sim.cells.length ? sim.cells.reduce((a, c) => a + c.reserve, 0) / sim.cells.length : 0,
   };
 }
