@@ -242,10 +242,24 @@ export const CFG = {
 
      ⚠⚠ DEFAULTED TO ZERO, because it was measured and it LOSES. Flat conduction
      took sticky lineages from 37% of the population to 0.4%; rescue-only, which
-     was supposed to fix that, still never beat sharing nothing. The mechanism is
-     kept rather than deleted because it is expected to be worth revisiting once
-     a mortality source exists that is not resource competition — insurance is
-     worth nothing when nothing kills you except being outbred. See stage 6. */
+     was supposed to fix that, still never beat sharing nothing.
+
+     WHY, precisely: reproduction is threshold-gated, so the value of reserve is
+     CONVEX near the bud threshold. A cell one unit short of budding gains
+     enormously from that unit; a mid-range cell gains almost nothing. Sharing
+     moves material from the convex region to the flat one, and redistribution
+     down a convex curve destroys value. Insurance pays where the curve is
+     CONCAVE — at the death cliff — but budding is frequent and starvation is
+     rare, so the convex region wins.
+
+     (An earlier note here blamed carrying capacity: "staying alive is worth
+     nothing when the limiting factor is resources". That was wrong. Selection
+     acts on RELATIVE fitness, and at capacity a genotype's fitness IS its K —
+     crowded populations evolve MORE competitive persistence, not less.)
+
+     Kept rather than deleted: worth revisiting if a continuous condition-to-
+     fecundity link is ever added, which would flatten the convexity, or once a
+     largely ADDITIVE mortality source exists. See stage 6. */
   share: 0,
   /** Sharing is RESCUE, not equalisation, and the difference decides everything.
 
