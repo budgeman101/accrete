@@ -312,6 +312,8 @@ export function tick(sim: Sim, dt: number): void {
 
   breakOverstressedBonds(sim);
   metabolise(sim);
+  share(sim);
+  reap(sim);
   grow(sim);
   regenerate(sim);
   compact(sim);
@@ -487,7 +489,40 @@ function metabolise(sim: Sim): void {
     // upkeep is paid across EXPOSED surface: neighbours shelter you from it
     const exposed = 1 / (1 + CFG.upkeepShelter * c.crowding);
     c.reserve -= CFG.upkeep * exposed + CFG.moveCost * Math.hypot(c.px, c.py);
-    if (c.reserve <= 0) {
+  }
+}
+
+/* ── rule 6: bonds conduct ──────────────────────────────────────────────────
+   Reserve flows along a bond from the richer end to the poorer. Nothing decides
+   to give; the junction simply passes material, the way a real one does.
+
+   This runs BEFORE the death pass on purpose — the entire value of sharing is
+   that it can catch a cell that would otherwise have hit zero this tick. Put it
+   after, and the mechanism would be present and unable to do the one thing it
+   is for. */
+function share(sim: Sim): void {
+  if (CFG.share <= 0) return;
+  const line = CFG.rescueLine * CFG.reserveMax;
+  for (const b of sim.bonds) {
+    if (!b.live) continue;
+    const x = sim.cells[b.a]!;
+    const y = sim.cells[b.b]!;
+    const poor = x.reserve <= y.reserve ? x : y;
+    const rich = poor === x ? y : x;
+    if (poor.reserve >= line) continue;      // nobody in trouble, nothing moves
+    const need = line - poor.reserve;
+    const spare = rich.reserve - line;       // only ever out of the EXCESS
+    if (spare <= 0) continue;
+    const flow = Math.min(need, spare) * CFG.share;
+    rich.reserve -= flow;
+    poor.reserve += flow;
+  }
+}
+
+/** Whoever could not cover it stops being one of the cells. */
+function reap(sim: Sim): void {
+  for (const c of sim.cells) {
+    if (c.alive && c.reserve <= 0) {
       c.alive = false;
       sim.deathsThisTick++;
       sim.totalDeaths++;

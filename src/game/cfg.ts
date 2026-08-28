@@ -222,6 +222,46 @@ export const CFG = {
       station has to be earned by being big, not by being lucky. */
   flowDrift: 0.0016,
 
+  // ---- stage 6: bonds conduct ----
+  /* Fraction of the difference in reserve that flows along a bond each tick.
+
+     THE POINT IS VARIANCE, NOT INTAKE. Sharing is zero-sum in the mean — you
+     give when you are on good ground and receive when you are on bad. It pays
+     because death at zero is ABSORBING: averaging with a neighbour cannot raise
+     your expected intake but it can stop you hitting zero, and a fitness
+     function with an irreversible floor rewards that. Insurance.
+
+     And unlike the surface-to-volume saving, it is IMPOSSIBLE WITHOUT THE BOND.
+     That was the whole failure of stage 4: shelter came free to any cell
+     standing in a crowd, so nothing had to stick to get it.
+
+     A world constant rather than a gene, deliberately: conduction is a property
+     of the junction, which is what a real one is (gap junctions, plasmodesmata).
+     ⚠ Making it a gene reopens the cheater question — take without giving — and
+     that is a real question this design has not yet had to face.
+
+     ⚠⚠ DEFAULTED TO ZERO, because it was measured and it LOSES. Flat conduction
+     took sticky lineages from 37% of the population to 0.4%; rescue-only, which
+     was supposed to fix that, still never beat sharing nothing. The mechanism is
+     kept rather than deleted because it is expected to be worth revisiting once
+     a mortality source exists that is not resource competition — insurance is
+     worth nothing when nothing kills you except being outbred. See stage 6. */
+  share: 0,
+  /** Sharing is RESCUE, not equalisation, and the difference decides everything.
+
+     Flat conduction was built first and it was catastrophic: sticky lineages fell
+     from 37% to 0.4% of the population. Reproduction is threshold-gated, so
+     VARIANCE IS AN ASSET — without pooling somebody is always rich enough to
+     divide, and pooling flattens everyone to a mean that may sit below the
+     threshold, so a cluster becomes a set of equally mediocre cells that never
+     bud while loose cells bud freely. The insurance intuition was backwards.
+
+     So material only flows to a cell BELOW this line, and only out of a partner's
+     excess ABOVE it. The top of the distribution is untouched — the rich still
+     get rich enough to divide — and only the tail that was about to die is
+     caught. Which is what a body does: it triages, it does not equalise. */
+  rescueLine: 0.3,
+
   // ---- stage 5: the genome ----
   /* Four traits are now carried by the cell and inherited, not read from here.
      The values below are only where a seeded world STARTS.
