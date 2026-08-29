@@ -93,6 +93,41 @@ describe('what this world actually does with stickiness', () => {
   }, 600_000);
 });
 
+describe('the prediction the derivation makes', () => {
+  it('SPATIAL STRUCTURE PERMITS COEXISTENCE — dose-response, not on/off', () => {
+    /* The derivation says a uniform environment cannot hold a niche, so complete
+       competitors cannot coexist in one. The test is coexistence — and NOTHING in
+       this codebase implements coexistence, so it cannot have been built in.
+
+       Switching the dimension off outright could not be tested: a well-mixed
+       world is not viable at any resource level where the spatial one is (they
+       occupy disjoint regimes). Diffusion smooths the world by DEGREE instead,
+       so every condition stays alive and the comparison is a dose-response.
+
+       Measured over 3 seeds: minority lineage 38.1% at diffusion 0.002, 26.5% at
+       0.02, 11.5% at 0.08, 13.4% at 0.3 — squeezed toward exclusion as the world
+       smooths, never quite reaching it inside the run. */
+    const minority = (diffuse: number, ticks = 20000) => {
+      let sum = 0;
+      for (const seed of SEEDS) {
+        Object.assign(CFG, BASE, { diffuse, mutStickiness: 0, mutRatio: 0 });
+        const sim = createSim(seed);
+        sim.cells.forEach((c, i) => { c.genes.budThreshold = i % 2 ? 0.45 : 0.95; });
+        for (let i = 0; i < ticks; i++) { tick(sim, 1 / 60); if (!sim.cells.length) break; }
+        const n = sim.cells.length;
+        const early = n ? sim.cells.filter((c) => c.genes.budThreshold < 0.7).length / n : 0;
+        sum += n ? Math.min(early, 1 - early) : 0;
+      }
+      return sum / SEEDS.length;
+    };
+
+    const patchy = minority(0.002);
+    const smooth = minority(0.08);
+    expect(patchy).toBeGreaterThan(0.2);            // both lineages genuinely present
+    expect(smooth).toBeLessThan(patchy * 0.65);     // and squeezed out as it smooths
+  }, 900_000);
+});
+
 describe('structure over the long run', () => {
   it('patchiness is SUSTAINED, not a colonisation transient', () => {
     /* The figure of ~30 patches once recorded here was itself a colonisation
