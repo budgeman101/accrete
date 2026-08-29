@@ -19,8 +19,15 @@
    under it decides how fast it grows, and the jitter a timer needed comes free
    from the fact that no two places are equally rich.
 
-   NOT HERE YET: sensing, emission, genomes, evolution, shape. Cells are circles
-   and every one of them is identical.
+   AND NOTHING ELSE. A current, drag shelter, surface-to-volume upkeep,
+   chemotaxis and sharing along bonds were each built, measured, and CUT: every
+   one existed to force clustering to pay, which was never the claim. The claim
+   is the field's own — life-like behaviour is a property of organisation rather
+   than matter — plus the two quantities the field pins at zero. Minimality is
+   not a constraint on that, it IS it. What the cut mechanisms taught is kept in
+   accrete-sketch.md.
+
+   NOT HERE: sensing, emission, shape. Cells are circles.
 
    THE ONE COMMITMENT: identity is DERIVED, never stored. There is no array of
    organisms. A cluster is whatever is currently connected by live bonds, worked
@@ -46,9 +53,6 @@ export interface Genes {
   stickiness: number;
   /** Tension the bond survives at stickiness 1. */
   bondStrength: number;
-  /** Propulsion per unit of substrate gradient. Has a measured optimum, so this
-      is also the check that evolution finds a shape rather than a ceiling. */
-  taxis: number;
   /** Reserve at which the cell divides, as a fraction of reserveMax. */
   budThreshold: number;
 }
@@ -67,17 +71,6 @@ export interface Cell {
   r: number;
   /** What it has in hand. Upkeep comes out of this; surplus makes a daughter. */
   reserve: number;
-  /** Propulsion this cell is applying, recomputed once a tick and added in every
-      substep. Charged for in metabolise. */
-  px: number;
-  py: number;
-  /** Force the current is putting on it — rule 4. Not charged for: the world
-      does this to you, it is not something you spend. */
-  qx: number;
-  qy: number;
-  /** How many cells are touching it, counted during the force pass. Free there,
-      and it is the sense that tells an interior cell it is interior. */
-  crowding: number;
   /** Which connected component it is in this tick. Derived, never authoritative. */
   cluster: number;
   genes: Genes;
@@ -157,17 +150,6 @@ export function substrateAt(sim: Sim, x: number, y: number): number {
   return v;
 }
 
-/** Substrate gradient, by central difference over one patch of the same bilinear
-    field a cell draws from. This is the only thing a cell senses about the world
-    beyond its own body — and it is a READING, not an instruction. */
-export function gradientAt(sim: Sim, x: number, y: number): { gx: number; gy: number } {
-  const h = CFG.fieldCell;
-  return {
-    gx: (substrateAt(sim, x + h, y) - substrateAt(sim, x - h, y)) / (2 * h),
-    gy: (substrateAt(sim, x, y + h) - substrateAt(sim, x, y - h)) / (2 * h),
-  };
-}
-
 /** Take `amount` from around (x,y), spread over the four nearest patches by the
     same weights substrateAt reads them with. Returns what was actually got —
     less than asked for when the ground is thin. */
@@ -193,25 +175,6 @@ function drawFrom(sim: Sim, x: number, y: number, amount: number): number {
     }
   }
   return got;
-}
-
-/* ── rule 4: the current ────────────────────────────────────────────────────
-   A divergence-free flow from the stream function
-       psi = A sin(kx + wt) sin(ky - 0.7wt),   v = (dpsi/dy, -dpsi/dx)
-   so it swirls and carries nothing out of the world. The phase drifts, because
-   a static pattern would be permanent sheltered ground handed out by the
-   designer rather than earned. */
-export function flowAt(x: number, y: number, t: number): { vx: number; vy: number } {
-  if (CFG.flowSpeed === 0) return { vx: 0, vy: 0 };
-  const k = (Math.PI * 2) / CFG.flowScale;
-  const w = CFG.flowDrift;
-  const a = k * x + w * t;
-  const b = k * y - 0.7 * w * t;
-  const A = (CFG.flowSpeed * CFG.flowScale) / (Math.PI * 2);
-  return {
-    vx: A * k * Math.sin(a) * Math.cos(b),
-    vy: -A * k * Math.cos(a) * Math.sin(b),
-  };
 }
 
 export function createSim(seed: string): Sim {
@@ -255,7 +218,6 @@ export function startingGenes(): Genes {
   return {
     stickiness: CFG.stickiness,
     bondStrength: CFG.bondStrengthMax,
-    taxis: CFG.taxis,
     budThreshold: CFG.budThreshold,
   };
 }
@@ -266,7 +228,6 @@ function mutate(g: Genes, rng: Rng): Genes {
   return {
     stickiness: Math.max(0, Math.min(1, g.stickiness + rng.gauss(0, CFG.mutStickiness))),
     bondStrength: ratio(g.bondStrength),
-    taxis: ratio(g.taxis),
     budThreshold: Math.max(0.05, Math.min(1, g.budThreshold + rng.gauss(0, CFG.mutStickiness))),
   };
 }
@@ -279,11 +240,6 @@ function makeCell(x: number, y: number, birthTick: number, reserve = CFG.reserve
     y,
     fx: 0,
     fy: 0,
-    px: 0,
-    py: 0,
-    qx: 0,
-    qy: 0,
-    crowding: 0,
     r: CFG.cellRadius,
     reserve,
     cluster: -1,
@@ -303,8 +259,6 @@ export function tick(sim: Sim, dt: number): void {
   sim.deathsThisTick = 0;
   sim.birthsThisTick = 0;
 
-  sense(sim);
-
   for (let s = 0; s < CFG.substeps; s++) {
     accumulateForces(sim);
     integrate(sim);
@@ -312,46 +266,11 @@ export function tick(sim: Sim, dt: number): void {
 
   breakOverstressedBonds(sim);
   metabolise(sim);
-  share(sim);
   reap(sim);
   grow(sim);
   regenerate(sim);
   compact(sim);
   recomputeClusters(sim);
-}
-
-/* ── rule 5: sensing ────────────────────────────────────────────────────────
-   Read the world, decide a push. Once per tick, not once per substep — the
-   reading does not change inside a tick and re-sampling it four times would
-   just be four times the cost for the same answer.
-
-   Nothing here says "go where the food is". It says: push along the gradient by
-   this much. A negative strength would push the other way and everything would
-   starve, and no rule in this file would object. */
-function sense(sim: Sim): void {
-  for (const c of sim.cells) {
-    if (c.genes.taxis === 0) {
-      c.px = 0;
-      c.py = 0;
-    } else {
-      const g = gradientAt(sim, c.x, c.y);
-      c.px = c.genes.taxis * g.gx;
-      c.py = c.genes.taxis * g.gy;
-    }
-
-    /* Rule 4. Crowding is last tick's count, which is what makes this cheap —
-       and a tick of lag on how sheltered you are is not a distinction anything
-       in this world could notice. */
-    if (CFG.drag === 0 || CFG.flowSpeed === 0) {
-      c.qx = 0;
-      c.qy = 0;
-    } else {
-      const v = flowAt(c.x, c.y, sim.tick);
-      const shelter = CFG.drag / (1 + CFG.shelter * c.crowding);
-      c.qx = shelter * v.vx;
-      c.qy = shelter * v.vy;
-    }
-  }
 }
 
 /* ── forces ─────────────────────────────────────────────────────────────────
@@ -362,11 +281,8 @@ function accumulateForces(sim: Sim): void {
   const cells = sim.cells;
   for (let i = 0; i < cells.length; i++) {
     const c = cells[i]!;
-    // propulsion is a force like any other, so it argues with repulsion and with
-    // whatever a cell is bonded to rather than overriding them
-    c.fx = c.px + c.qx;
-    c.fy = c.py + c.qy;
-    c.crowding = 0;
+    c.fx = 0;
+    c.fy = 0;
   }
 
   // spatial hash so this stays O(n) rather than O(n^2)
@@ -396,17 +312,6 @@ function accumulateForces(sim: Sim): void {
           const dy = cj.y - ci.y;
           const d2 = dx * dx + dy * dy;
           const rest = ci.r + cj.r;
-
-          /* Crowding counts NEIGHBOURS, not overlaps. A bonded pair rests at
-             exactly the contact distance and so never overlaps at all — counting
-             only overlaps made a cell inside a cluster read as less crowded than
-             a loose cell in a crush, which is backwards for the one sense that is
-             supposed to tell an interior cell that it is interior. */
-          const near = rest * 1.3;
-          if (d2 < near * near) {
-            ci.crowding++;
-            cj.crowding++;
-          }
 
           if (d2 >= rest * rest || d2 === 0) continue;
           const d = Math.sqrt(d2);
@@ -486,36 +391,7 @@ function metabolise(sim: Sim): void {
   for (const c of sim.cells) {
     const want = Math.min(CFG.drawRate, CFG.reserveMax - c.reserve);
     if (want > 0) c.reserve += drawFrom(sim, c.x, c.y, want);
-    // upkeep is paid across EXPOSED surface: neighbours shelter you from it
-    const exposed = 1 / (1 + CFG.upkeepShelter * c.crowding);
-    c.reserve -= CFG.upkeep * exposed + CFG.moveCost * Math.hypot(c.px, c.py);
-  }
-}
-
-/* ── rule 6: bonds conduct ──────────────────────────────────────────────────
-   Reserve flows along a bond from the richer end to the poorer. Nothing decides
-   to give; the junction simply passes material, the way a real one does.
-
-   This runs BEFORE the death pass on purpose — the entire value of sharing is
-   that it can catch a cell that would otherwise have hit zero this tick. Put it
-   after, and the mechanism would be present and unable to do the one thing it
-   is for. */
-function share(sim: Sim): void {
-  if (CFG.share <= 0) return;
-  const line = CFG.rescueLine * CFG.reserveMax;
-  for (const b of sim.bonds) {
-    if (!b.live) continue;
-    const x = sim.cells[b.a]!;
-    const y = sim.cells[b.b]!;
-    const poor = x.reserve <= y.reserve ? x : y;
-    const rich = poor === x ? y : x;
-    if (poor.reserve >= line) continue;      // nobody in trouble, nothing moves
-    const need = line - poor.reserve;
-    const spare = rich.reserve - line;       // only ever out of the EXCESS
-    if (spare <= 0) continue;
-    const flow = Math.min(need, spare) * CFG.share;
-    rich.reserve -= flow;
-    poor.reserve += flow;
+    c.reserve -= CFG.upkeep;
   }
 }
 
@@ -742,7 +618,6 @@ export interface Stats {
   geneStickiness: number;
   geneStickinessSd: number;
   geneBondStrength: number;
-  geneTaxis: number;
   geneBudThreshold: number;
   /** Share of cells that are in a cluster of more than one. */
   clusteredFraction: number;
@@ -813,7 +688,6 @@ export function stats(sim: Sim): Stats {
     geneStickiness: gs,
     geneStickinessSd: gsSd,
     geneBondStrength: gmean((g) => g.bondStrength),
-    geneTaxis: gmean((g) => g.taxis),
     geneBudThreshold: gmean((g) => g.budThreshold),
     clusteredFraction: clustered,
     meanReserve: sim.cells.length ? sim.cells.reduce((a, c) => a + c.reserve, 0) / sim.cells.length : 0,

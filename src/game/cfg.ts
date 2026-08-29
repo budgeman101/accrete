@@ -50,7 +50,7 @@ export const CFG = {
       packing — which is the mechanism this whole stage exists to test. */
   bondRest: 1,
 
-  // ---- the one hand-set gene (becomes evolvable in stage 3) ----
+  // ---- where a fresh world starts; these are GENES, carried by the cell ----
   /** 0 = daughters always separate cleanly (unicellular).
       1 = the bond is as strong as this world allows.
       This is "separation after division can fail" as a dial, before it is a gene. */
@@ -113,25 +113,8 @@ export const CFG = {
       the field stays strongly patchy (8.97) and healthier (11.4 of 20) while
       supporting half again as many cells as no diffusion at all. */
   diffuse: 0.002,
-  /** How much each neighbour reduces upkeep — surface-to-volume, which is the
-      classic reason for being bigger and the thing that finally makes clustering
-      WORTH something here.
-
-      Loss happens across exposed surface, and an interior cell has less of it.
-      That is a statement about how loss works, not a rule about groups: it makes
-      no reference to clusters or bonds, and a cell packed among strangers gets
-      the same break. What makes it select for STICKINESS specifically is rule 4 —
-      the current pulls loose clumps apart, so only a bonded group keeps the
-      shelter it has.
-
-      The first attempt at rule 4 failed for a reason worth keeping: shelter from
-      DRAG lets a big lump hold station, and holding station is worthless in a
-      world where presence spoils the ground. Rule 3 makes staying put lethal;
-      that version of rule 4 rewarded it. They were fighting. */
-  upkeepShelter: 0.22,
-  /** What a cell spends per tick simply existing, fully exposed. Death by
-      neglect lives here: stand still, spoil your patch, and this number kills
-      you. */
+  /** What a cell spends per tick simply existing. Death by neglect lives here:
+      stand still, spoil your patch, and this number kills you. */
   upkeep: 0.0267,
   /** The most a cell can pull out of its field cell per tick. Caps how fast a
       rich patch can be stripped, and is what makes crowding onto one good spot
@@ -154,127 +137,6 @@ export const CFG = {
       race to. It is also just true: a new cell costs a membrane whatever else
       it gets. */
   divisionCost: 1.1,
-
-  // ---- rule 5: sensing, and the one verb that costs ----
-  /* A cell reads the substrate gradient where it stands and pushes along it.
-     That is chemotaxis, which is what a real single cell does with no brain at
-     all. Here it is a fixed policy with a strength dial; in stage 4 the policy
-     becomes a function the genome computes, and a genome is free to evolve one
-     that runs DOWN the gradient and starves. Nothing knows which way is good. */
-
-  /** Propulsion force per unit of substrate gradient. Zero = nothing moves,
-      which is the control this stage is measured against.
-
-      MEASURED, and there is a phase transition just above this. Movement raises
-      the sustainable population (840 -> 1177 here, and up to ~1920 if pushed),
-      but past about 20 the cells become perfect foragers: every gradient is
-      found and eaten, patchiness collapses from 9 to 0.1, and the world is
-      stripped uniformly bare. Held at 8, where the population gains 40% and
-      patchiness is HIGHER than with no movement at all (9.19 against 8.97) —
-      cells concentrating on rich ground deepens the contrast. */
-  taxis: 8,
-  /** Reserve spent per tick per unit of propulsion force. Movement is paid out
-      of the SAME budget as existing, so searching competes with enduring and no
-      penalty had to be written to make it a trade-off.
-
-      This one matters more than its size suggests. At 3% of upkeep it barely
-      shows here, but it is what stops strong taxis running away: at taxis 40 it
-      is the difference between patchiness 0.32 and 5.55, and at taxis 220 it is
-      the difference between a stripped world and extinction. There is a real
-      OPTIMUM in movement — too little and too much both cost population — which
-      is what will give this a shape to find once it becomes a gene rather than a
-      ramp to run to the ceiling. */
-  moveCost: 0.002,
-
-  // ---- rule 4: one force whose effect depends on size ----
-  /* Without this the physics is scale-invariant: being bigger buys nothing, so
-     nothing ever pays for the first cluster and stickiness has no reason to
-     exist. A current, not settling — settling only selected anything in the lab
-     because a TRANSFER STEP did the culling, and with no transfer, sinking fast
-     just means being at the bottom.
-
-     The whole mechanism is SHELTER. A current that pushes every cell equally
-     moves a cluster exactly as fast as a lone cell and changes nothing. It is
-     only when interior cells are shielded that force scales with a lump's
-     PERIMETER while being shared across its AREA — so big things hold station
-     and small things wash off. That is what makes a good patch worth being big
-     on. */
-
-  /** Force per unit of flow speed on a fully exposed cell. Zero = no current.
-
-      MEASURED at equilibrium over two seeds. The clustering edge grows with it —
-      +5% at 70, +10% at 160, +122% at 320 — but so does the damage: patch
-      structure falls from 5.3 regions to 2.9 to 2.6, and the world flattens.
-      Held at 70, because s = 0.05 is already a very strong selection coefficient
-      and the rest is overkill that wrecks the thing you would be watching. */
-  drag: 70,
-  /** How much each neighbour shelters you. Force is divided by (1 + shelter x
-      crowding), so an interior cell feels almost nothing. */
-  shelter: 0.55,
-  /** Flow speed. The field is a divergence-free swirl from a stream function, so
-      it circulates rather than sweeping everything into a corner. */
-  flowSpeed: 1,
-  /** Size of the swirl cells, in world units. */
-  flowScale: 420,
-  /** How fast the pattern drifts. NOT zero: a static flow would hand out
-      permanently sheltered real estate, which is designer-supplied spatial
-      structure of exactly the kind this project refuses. Drifting means holding
-      station has to be earned by being big, not by being lucky. */
-  flowDrift: 0.0016,
-
-  // ---- stage 6: bonds conduct ----
-  /* Fraction of the difference in reserve that flows along a bond each tick.
-
-     THE POINT IS VARIANCE, NOT INTAKE. Sharing is zero-sum in the mean — you
-     give when you are on good ground and receive when you are on bad. It pays
-     because death at zero is ABSORBING: averaging with a neighbour cannot raise
-     your expected intake but it can stop you hitting zero, and a fitness
-     function with an irreversible floor rewards that. Insurance.
-
-     And unlike the surface-to-volume saving, it is IMPOSSIBLE WITHOUT THE BOND.
-     That was the whole failure of stage 4: shelter came free to any cell
-     standing in a crowd, so nothing had to stick to get it.
-
-     A world constant rather than a gene, deliberately: conduction is a property
-     of the junction, which is what a real one is (gap junctions, plasmodesmata).
-     ⚠ Making it a gene reopens the cheater question — take without giving — and
-     that is a real question this design has not yet had to face.
-
-     ⚠⚠ DEFAULTED TO ZERO, because it was measured and it LOSES. Flat conduction
-     took sticky lineages from 37% of the population to 0.4%; rescue-only, which
-     was supposed to fix that, still never beat sharing nothing.
-
-     WHY, precisely: reproduction is threshold-gated, so the value of reserve is
-     CONVEX near the bud threshold. A cell one unit short of budding gains
-     enormously from that unit; a mid-range cell gains almost nothing. Sharing
-     moves material from the convex region to the flat one, and redistribution
-     down a convex curve destroys value. Insurance pays where the curve is
-     CONCAVE — at the death cliff — but budding is frequent and starvation is
-     rare, so the convex region wins.
-
-     (An earlier note here blamed carrying capacity: "staying alive is worth
-     nothing when the limiting factor is resources". That was wrong. Selection
-     acts on RELATIVE fitness, and at capacity a genotype's fitness IS its K —
-     crowded populations evolve MORE competitive persistence, not less.)
-
-     Kept rather than deleted: worth revisiting if a continuous condition-to-
-     fecundity link is ever added, which would flatten the convexity, or once a
-     largely ADDITIVE mortality source exists. See stage 6. */
-  share: 0,
-  /** Sharing is RESCUE, not equalisation, and the difference decides everything.
-
-     Flat conduction was built first and it was catastrophic: sticky lineages fell
-     from 37% to 0.4% of the population. Reproduction is threshold-gated, so
-     VARIANCE IS AN ASSET — without pooling somebody is always rich enough to
-     divide, and pooling flattens everyone to a mean that may sit below the
-     threshold, so a cluster becomes a set of equally mediocre cells that never
-     bud while loose cells bud freely. The insurance intuition was backwards.
-
-     So material only flows to a cell BELOW this line, and only out of a partner's
-     excess ABOVE it. The top of the distribution is untouched — the rich still
-     get rich enough to divide — and only the tail that was about to die is
-     caught. Which is what a body does: it triages, it does not equalise. */
-  rescueLine: 0.3,
 
   // ---- stage 5: the genome ----
   /* Four traits are now carried by the cell and inherited, not read from here.

@@ -8,7 +8,7 @@
    Run: npm test */
 
 import { afterEach, describe, expect, it } from 'vitest';
-import { createSim, flowAt, gradientAt, resetSim, startingGenes, stats, substrateAt, tick, type Sim } from '../src/game/sim.js';
+import { createSim, resetSim, stats, substrateAt, tick, type Sim } from '../src/game/sim.js';
 import { makeRng } from '../src/kit/rng.js';
 import { CFG } from '../src/game/cfg.js';
 
@@ -63,7 +63,6 @@ describe('rule 3 — existing costs, and the cost comes out of the world', () =>
 
   it('with nothing to draw, everything starves inside its reserve', () => {
     CFG.drawRate = 0;
-    CFG.upkeepShelter = 0; // isolating rule 3: sheltered cells legitimately last longer
     const ticksToStarve = Math.ceil((CFG.reserveMax * CFG.reserveAtBirth) / CFG.upkeep);
     const sim = run('brimtoveharn', ticksToStarve + 5);
     expect(sim.cells.length).toBe(0);
@@ -122,6 +121,25 @@ describe('rule 1 — the world keeps what agents do to it', () => {
     expect(mean).toBeLessThan(stats(sim).fieldMean);
   });
 
+  it('a patch both falls and recovers — local boom and bust, not a one-way strip', () => {
+    const sim = createSim('brimtoveharn');
+    const watch = new Array(CFG.fieldSize ** 2).fill(0).map((_, i) => i).filter((_, i) => i % 37 === 0);
+    const lo = new Map<number, number>();
+    let anyRecovered = false;
+    for (let i = 0; i < 14000; i++) {
+      tick(sim, 1 / 60);
+      if (i % 25) continue;
+      for (const idx of watch) {
+        const v = sim.field[idx]!;
+        const l = Math.min(lo.get(idx) ?? v, v);
+        lo.set(idx, l);
+        // fell a long way and then climbed a long way back out of it
+        if (l < CFG.fieldMax * 0.25 && v > l + CFG.fieldMax * 0.35) anyRecovered = true;
+      }
+    }
+    expect(anyRecovered).toBe(true);
+  });
+
   it('the world FORGETS SLOWLY — a spoiled field does not spring back', () => {
     const sim = run('brimtoveharn', 4500);
     const spoiled = stats(sim).fieldMean;
@@ -165,125 +183,6 @@ describe('rule 2 — separation can fail, and crowding tears the result apart', 
     expect(strong).toBeGreaterThan(weak);
   });
 });
-
-/* ── rule 5 ─────────────────────────────────────────────────────────────── */
-
-describe('rule 5 — a cell senses the world and pushes along what it reads', () => {
-  it('with taxis off, nothing moves under its own power', () => {
-    /* Not exactly zero: ratio genes carry a small floor, because a multiplicative
-       mutation cannot leave zero and a gene that reaches it would be switched off
-       forever. So "off" means negligible, and the floor is four orders of
-       magnitude below the working value. */
-    CFG.mutRatio = 0;
-    CFG.taxis = 0;
-    const sim = run('brimtoveharn', 500);
-    const worst = Math.max(...sim.cells.map((c) => Math.hypot(c.px, c.py)));
-    expect(worst).toBeLessThan(1e-3);
-  });
-
-  it('a cell climbs a gradient — and it is a reading, not an instruction', () => {
-    const sim = createSim('brimtoveharn');
-    // a clean ramp, rising to the east, and one cell sitting in the middle of it
-    const n = CFG.fieldSize;
-    for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) sim.field[y * n + x] = (x / n) * CFG.fieldMax;
-    sim.cells.length = 0;
-    sim.bonds.length = 0;
-    sim.cells.push({ ...structuredClone(createSim('x').cells[0]!), x: 0, y: 0, reserve: CFG.reserveMax });
-    const g = gradientAt(sim, 0, 0);
-    expect(g.gx).toBeGreaterThan(0); // the reading itself points up the ramp
-    const before = sim.cells[0]!.x;
-    for (let i = 0; i < 300; i++) tick(sim, 1 / 60);
-    expect(sim.cells[0]!.x).toBeGreaterThan(before);
-  });
-
-  it('but in a current a cell is a DRIFTER, not a swimmer', () => {
-    /* Swimming cannot compete with the flow, and scaling it up to try is
-       unaffordable: propulsion is charged by force, so at 20x taxis the
-       population falls 72% and at 60x it goes extinct. Cells drift, as plankton
-       do. Taxis survives as a weak bias, not as locomotion. */
-    const sim = run('brimtoveharn', 4000);
-    const push = sim.cells.reduce((a, c) => a + Math.hypot(c.px, c.py), 0) / sim.cells.length;
-    const carried = sim.cells.reduce((a, c) => a + Math.hypot(c.qx, c.qy), 0) / sim.cells.length;
-    expect(carried).toBeGreaterThan(push * 3);
-  });
-
-  it('movement is PAID FOR — priced high enough, it is a net loss', () => {
-    CFG.moveCost = 0.02;
-    const dear = run('brimtoveharn', 6000).cells.length;
-    Object.assign(CFG, BASE);
-    const cheap = run('brimtoveharn', 6000).cells.length;
-    expect(dear).toBeLessThan(cheap);
-  });
-
-  it('and the world stays patchy at this strength — foraging has not flattened it', () => {
-    expect(stats(run('brimtoveharn', 4500)).fieldSd).toBeGreaterThan(4);
-  });
-
-  it('crowding is counted, and interior cells read higher than lone ones', () => {
-    const sim = run('brimtoveharn', 4500);
-    const inCluster = sim.cells.filter((c) => sim.clusterSizeOf[c.cluster]! > 1);
-    const alone = sim.cells.filter((c) => sim.clusterSizeOf[c.cluster] === 1);
-    if (inCluster.length && alone.length) {
-      const m = (a: typeof sim.cells) => a.reduce((s, c) => s + c.crowding, 0) / a.length;
-      expect(m(inCluster)).toBeGreaterThan(m(alone));
-    }
-  });
-});
-
-/* ── rule 4 ─────────────────────────────────────────────────────────────── */
-
-describe('rule 4 — one force whose effect depends on size', () => {
-  const driftBySize = (sim: Sim, ticks: number) => {
-    const before = new Map(sim.cells.map((c) => [c.id, { x: c.x, y: c.y, size: sim.clusterSizeOf[c.cluster] ?? 1 }]));
-    for (let i = 0; i < ticks; i++) tick(sim, 1 / 60);
-    let lone = { n: 0, d: 0 };
-    let big = { n: 0, d: 0 };
-    for (const c of sim.cells) {
-      const p = before.get(c.id);
-      if (!p) continue;
-      const d = Math.hypot(c.x - p.x, c.y - p.y);
-      if (p.size === 1) { lone.n++; lone.d += d; } else if (p.size >= 4) { big.n++; big.d += d; }
-    }
-    return { lone: lone.d / Math.max(1, lone.n), big: big.d / Math.max(1, big.n), n: Math.min(lone.n, big.n) };
-  };
-
-  it('the flow circulates rather than sweeping the world into a corner', () => {
-    /* A stream function is divergence-free by construction, so this is really a
-       check that the curl was taken the right way round. */
-    let sx = 0;
-    let sy = 0;
-    const N = 40;
-    for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) {
-      const v = flowAt((i / N - 0.5) * CFG.flowScale * 2, (j / N - 0.5) * CFG.flowScale * 2, 0);
-      sx += v.vx; sy += v.vy;
-    }
-    const mean = Math.hypot(sx, sy) / (N * N);
-    const typical = Math.hypot(flowAt(CFG.flowScale * 0.13, CFG.flowScale * 0.19, 0).vx, 1e-9);
-    expect(mean).toBeLessThan(typical * 0.2);
-  });
-
-  it('BIGGER LUMPS HOLD STATION — sheltered cells feel less current', () => {
-    const sim = run('brimtoveharn', 9000);
-    const d = driftBySize(sim, 120);
-    expect(d.n).toBeGreaterThan(20);
-    expect(d.big).toBeLessThan(d.lone * 0.9);
-  });
-
-  it('with no current, size makes no difference to drift', () => {
-    CFG.drag = 0;
-    const sim = run('brimtoveharn', 9000);
-    const d = driftBySize(sim, 120);
-    if (d.n > 20) expect(d.big).toBeGreaterThan(d.lone * 0.5);
-  });
-
-});
-
-/* ── the instrument ─────────────────────────────────────────────────────────
-   A warning in a design doc is not a check. These test the MEASURING, not the
-   world — because the failure that cost the most in this project was a metric
-   that scored its best number ever on a run that was visibly worse, and a
-   regrowth model whose shape forbade the phenomenon it was supposed to produce.
-   Both were written down as risks first. Neither was executable. */
 
 describe('the instrument itself', () => {
   const blankSim = () => {
@@ -335,47 +234,6 @@ describe('the instrument itself', () => {
   });
 });
 
-/* ── claims that were only prose ────────────────────────────────────────── */
-
-describe('claims the design makes, now checked', () => {
-  it('being a group cuts upkeep — surface-to-volume, and it is why sticking pays', () => {
-    /* This test used to assert the opposite: that grouping COSTS, because more
-       mouths draw on one patch. That was true and it was the whole problem —
-       nothing made clusters worth having. Upkeep now scales with exposed
-       surface, so the sign is deliberately reversed. */
-    const sim = run('brimtoveharn', 6000);
-    const grouped = sim.cells.filter((c) => sim.clusterSizeOf[c.cluster]! > 2);
-    const solitary = sim.cells.filter((c) => sim.clusterSizeOf[c.cluster] === 1);
-    if (grouped.length > 10 && solitary.length > 10) {
-      const meanCrowd = (a: typeof sim.cells) => a.reduce((s, c) => s + c.crowding, 0) / a.length;
-      expect(meanCrowd(grouped)).toBeGreaterThan(meanCrowd(solitary));
-    }
-  });
-
-  it('a patch both falls and recovers — local boom and bust, not a one-way strip', () => {
-    const sim = createSim('brimtoveharn');
-    const watch = new Array(CFG.fieldSize ** 2).fill(0).map((_, i) => i).filter((_, i) => i % 37 === 0);
-    const lo = new Map<number, number>();
-    const hi = new Map<number, number>();
-    let anyRecovered = false;
-    for (let i = 0; i < 14000; i++) {
-      tick(sim, 1 / 60);
-      if (i % 25) continue;
-      for (const idx of watch) {
-        const v = sim.field[idx]!;
-        const l = Math.min(lo.get(idx) ?? v, v);
-        lo.set(idx, l);
-        hi.set(idx, Math.max(hi.get(idx) ?? v, v));
-        // fell a long way and then climbed a long way back out of it
-        if (l < CFG.fieldMax * 0.25 && v > l + CFG.fieldMax * 0.35) anyRecovered = true;
-      }
-    }
-    expect(anyRecovered).toBe(true);
-  });
-});
-
-/* ── the genome ─────────────────────────────────────────────────────────── */
-
 describe('genes are carried by the cell, not read from config', () => {
   it('a daughter inherits its parent, with error', () => {
     const sim = run('brimtoveharn', 4000);
@@ -387,7 +245,7 @@ describe('genes are carried by the cell, not read from config', () => {
     };
     // variation exists at all (mutation happened) and has not exploded
     expect(spread((c) => c.genes.stickiness)).toBeGreaterThan(0.005);
-    expect(spread((c) => c.genes.taxis)).toBeGreaterThan(0);
+    expect(spread((c) => c.genes.bondStrength)).toBeGreaterThan(0);
   });
 
   it('a bond takes its strength from the DAUGHTER genes, not from CFG', () => {
