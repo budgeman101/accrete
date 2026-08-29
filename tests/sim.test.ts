@@ -104,6 +104,21 @@ describe('rule 1 — the world keeps what agents do to it', () => {
     expect(s.meanPatchSize).toBeLessThan(CFG.fieldSize ** 2 * 0.25);
   });
 
+  it('the ablation makes the world uniform while keeping it finite', () => {
+    /* Dimension 1 switched off. The first version of this REFILLED the field and
+       so removed scarcity along with the structure — the resource became infinite
+       and the population ran to the array cap. Well-mixing keeps the total and
+       destroys only the WHERE, which is what the derivation specifies. */
+    CFG.wellMixedWorld = true;
+    const sim = createSim('brimtoveharn');
+    const before = stats(sim).fieldMean;
+    for (let i = 0; i < 400; i++) tick(sim, 1 / 60);
+    const s = stats(sim);
+    expect(s.fieldSd).toBeCloseTo(0, 4);        // uniform everywhere
+    expect(s.patchCount).toBeLessThan(2);       // and therefore no patches
+    expect(s.fieldMean).toBeLessThan(before);   // but still finite: it was drawn down
+  });
+
   it('bare ground cannot regrow from nothing — only its neighbours seed it', () => {
     CFG.diffuse = 0;
     const sim = createSim('brimtoveharn');

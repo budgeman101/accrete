@@ -157,6 +157,28 @@ export const CFG = {
       halving and a doubling are the same size of change. */
   mutRatio: 0.07,
 
+  // ---- the ablation ----
+  /* Switch dimension 1 OFF: the world stops keeping WHERE anything was done. The
+     field's total is redistributed evenly across every cell each tick, so the
+     world still remembers how much was taken but not from where. Uniform, and
+     still scarce.
+
+     ⚠ The first version of this ablation REFILLED the field to full each tick,
+     and that was wrong: it removed scarcity along with the structure, making the
+     resource infinite. The population promptly ran to the array cap and nothing
+     excluded anything, because competitive exclusion needs a LIMITING resource.
+     Two things ablated at once, and an uninterpretable result. Well-mixing is
+     what the derivation actually specifies — `E(x)` constant in space.
+
+     This is not a strawman of the sims this project responds to — structurally
+     it IS them. A uniform, instantly-replenishing, memoryless environment is the
+     implicit world of Conway's Life, Lenia and Particle Life alike. Cloning one
+     of those faithfully is impossible anyway: they have no consumption for a
+     world to remember and no heredity to select on, so the dimension has nowhere
+     to attach. Ablating our own gives the same control for one variable, on one
+     substrate, and the ablated version is the baseline. */
+  wellMixedWorld: false,
+
   // ---- the run ----
   /** Hard ceiling so a runaway can't hang the tab. Not a biological limit. */
   maxCells: 4000,

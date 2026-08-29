@@ -452,6 +452,17 @@ function grow(sim: Sim): void {
     neighbours as well as by time. */
 function regenerate(sim: Sim): void {
   const f = sim.field;
+
+  /* Dimension 1, ablated: the world keeps how much was taken but not from where.
+     Everything is spread evenly, so every place is identical — and still finite,
+     which is the half the first attempt at this got wrong. Regrowth still runs
+     below, so the total behaves as it always did. */
+  if (CFG.wellMixedWorld) {
+    let total = 0;
+    for (let i = 0; i < f.length; i++) total += f[i]!;
+    f.fill(total / f.length);
+  }
+
   const n = CFG.fieldSize;
   const max = CFG.fieldMax;
   const r = CFG.regen;
