@@ -104,6 +104,12 @@ export interface Sim {
   deathsThisTick: number;
   totalDeaths: number;
   birthsThisTick: number;
+  /** Things that HAPPENED this tick, with where. Cleared every tick and read only
+      by the view. A fracture or a death is over in the instant it occurs and
+      leaves nothing behind to draw, so without this the two events that matter
+      most are the two you cannot see. Instrumentation, not mechanism: nothing in
+      the sim ever reads it. */
+  events: { x: number; y: number; kind: 'fracture' | 'death' }[];
   /** Derived each tick: sizes of every connected component, descending. For
       reporting only — it is SORTED, so it cannot be indexed by a cell's cluster
       id. Use clusterSizeOf for that. */
@@ -205,6 +211,7 @@ export function createSim(seed: string): Sim {
     deathsThisTick: 0,
     totalDeaths: 0,
     birthsThisTick: 0,
+    events: [],
     clusterSizes: [],
     clusterSizeOf: [],
   };
@@ -258,6 +265,7 @@ export function tick(sim: Sim, dt: number): void {
   sim.fracturesThisTick = 0;
   sim.deathsThisTick = 0;
   sim.birthsThisTick = 0;
+  sim.events.length = 0;
 
   for (let s = 0; s < CFG.substeps; s++) {
     accumulateForces(sim);
@@ -376,6 +384,9 @@ function breakOverstressedBonds(sim: Sim): void {
       bond.live = false;
       sim.fracturesThisTick++;
       sim.totalFractures++;
+      const a = sim.cells[bond.a]!;
+      const b = sim.cells[bond.b]!;
+      sim.events.push({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, kind: 'fracture' });
     }
   }
 }
@@ -402,6 +413,7 @@ function reap(sim: Sim): void {
       c.alive = false;
       sim.deathsThisTick++;
       sim.totalDeaths++;
+      sim.events.push({ x: c.x, y: c.y, kind: 'death' });
     }
   }
 }
@@ -728,4 +740,5 @@ export function resetSim(sim: Sim, seed = sim.seed): void {
   sim.birthsThisTick = 0;
   sim.clusterSizes = fresh.clusterSizes;
   sim.clusterSizeOf = fresh.clusterSizeOf;
+  sim.events.length = 0;
 }

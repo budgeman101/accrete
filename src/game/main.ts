@@ -172,7 +172,14 @@ async function boot() {
     let sim: Sim;
     let view: View;
     let cam: ReturnType<typeof createCamera>;
-    let hud: { rCells: any; rClusters: any; rLargest: any; rDeaths: any; rSticky: any; mPatch: any; mSticky: any };
+    let hud: { rCells: any; rClusters: any; rLargest: any; rDeaths: any; rSticky: any; mPatch: any; mSticky: any;
+      fWho: any; fAge: any; fFed: any; fStick: any; fSize: any; fPanel: any };
+    /* The followed cell, kept by STABLE ID — array indices shift under death and
+       compaction, so an index would silently start pointing at a stranger. */
+    let followed: number | null = null;
+    let followedDiedAt: number | null = null;
+    let onDown: ((e: PointerEvent) => void) | null = null;
+    let onUp: ((e: PointerEvent) => void) | null = null;
 
     return {
       // getters, so DBG.sim reaches the CURRENT scene's state
@@ -215,10 +222,36 @@ async function boot() {
            multicellularity evolving; it falling back to zero is the world
            answering no. */
         const mSticky = meter({ label: 'In a cluster', value: 0 });
+
+        /* Follow one individual. "Noise is what five thousand dots look like" —
+           the answer is being able to pick one out and keep hold of it, watch it
+           feed, see what it is made of, and be told when it dies rather than
+           having it vanish into the crowd. */
+        const fWho = readout({ label: 'Following', value: '—' });
+        const fAge = readout({ label: 'Age', value: '—' });
+        const fFed = readout({ label: 'Reserve', value: '—' });
+        const fStick = readout({ label: 'Its stickiness', value: '—' });
+        const fSize = readout({ label: 'Its cluster', value: '—' });
+        const fPanel = panel({ title: 'One cell', children: [fWho, fAge, fFed, fStick, fSize] });
         const side = panel({ title: null, children: [mPatch, mSticky] });
         side.style.width = '190px';
         const bottomLeft = overlay('bottom-left');
-        bottomLeft.append(side);
+        bottomLeft.append(side, fPanel);
+
+        /* Click to follow, drag to pan: told apart by how far the pointer moved,
+           because pixi-viewport is already using the same gestures. */
+        let downX = 0;
+        let downY = 0;
+        onDown = (e: PointerEvent) => { downX = e.offsetX; downY = e.offsetY; };
+        onUp = (e: PointerEvent) => {
+          if (Math.hypot(e.offsetX - downX, e.offsetY - downY) > 4) return; // a drag
+          const w = cam.toWorld(e.offsetX, e.offsetY);
+          followed = currentView?.pick(w.x, w.y) ?? null;
+          followedDiedAt = null;
+          currentView?.select(followed);
+        };
+        canvas.addEventListener('pointerdown', onDown);
+        canvas.addEventListener('pointerup', onUp);
 
         const topRight = overlay('top-right', { row: true });
         topRight.append(
@@ -228,7 +261,7 @@ async function boot() {
         );
 
         ctx.el.append(topLeft, bottomLeft, topRight);
-        hud = { rCells, rClusters, rLargest, rDeaths, rSticky, mPatch, mSticky };
+        hud = { rCells, rClusters, rLargest, rDeaths, rSticky, mPatch, mSticky, fWho, fAge, fFed, fStick, fSize, fPanel };
       },
 
       update(dt: number) {
@@ -257,6 +290,24 @@ async function boot() {
         hud.rDeaths.set(s.totalDeaths);
         hud.rSticky.set(s.geneStickiness.toFixed(2));
         hud.mSticky.set(s.clusteredFraction);
+
+        const me = followed === null ? undefined : sim.cells.find((c) => c.id === followed);
+        if (me) {
+          hud.fWho.set(`#${me.id}`);
+          hud.fAge.set(`${sim.tick - me.birthTick} ticks`);
+          hud.fFed.set(`${((me.reserve / CFG.reserveMax) * 100).toFixed(0)}%`);
+          hud.fStick.set(me.genes.stickiness.toFixed(2));
+          hud.fSize.set(`${sim.clusterSizeOf[me.cluster] ?? 1} cell(s)`);
+        } else if (followed !== null) {
+          // it died: say so and keep saying so, rather than blanking silently
+          if (followedDiedAt === null) followedDiedAt = sim.tick;
+          hud.fWho.set(`#${followed} — starved`);
+          hud.fAge.set(`at tick ${followedDiedAt}`);
+          hud.fFed.set('0%');
+          hud.fSize.set('—');
+        } else {
+          hud.fWho.set('— click one —');
+        }
         // sd of a uniform-ish field tops out well under a quarter of full
         hud.mPatch.set(Math.min(1, s.fieldSd / (CFG.fieldMax * 0.25)));
       },
@@ -264,7 +315,19 @@ async function boot() {
       /** Reachable as DBG.reset() — a known state is what makes stepping reproducible. */
       reset(seed?: string) { resetSim(sim, seed); },
 
+      /** Reachable as DBG.follow(id). Clicking is the real interface; this is so a
+          scripted capture or a test can drive it to a known cell, the same way
+          reset() makes stepping reproducible. */
+      follow(id: number | null) {
+        followed = id;
+        followedDiedAt = null;
+        currentView?.select(id);
+      },
+
       exit() {
+        if (onDown) canvas.removeEventListener('pointerdown', onDown);
+        if (onUp) canvas.removeEventListener('pointerup', onUp);
+        onDown = onUp = null;
         store.data.camera = cam.toJSON();
         store.save();
         currentView = null;
@@ -323,7 +386,10 @@ async function boot() {
       // live getters: installDbg uses defineProperties, so these re-evaluate
       get sim() { return (scenes.active as any)?.sim ?? null; },
       get cam() { return (scenes.active as any)?.cam ?? null; },
+      // so a scripted capture can drive the follow-one-cell view to a known state
+      get view() { return currentView; },
       reset: (seed?: string) => (scenes.active as any)?.reset?.(seed),
+      follow: (id: number | null) => (scenes.active as any)?.follow?.(id),
     },
     state: () => {
       const sim: Sim | null = (scenes.active as any)?.sim ?? null;

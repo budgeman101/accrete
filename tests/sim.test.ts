@@ -313,6 +313,32 @@ describe('the instrument, again: a bounded gene drifts off its boundary', () => 
   });
 });
 
+describe('what happened is recorded, so it can be shown', () => {
+  it('fractures and deaths leave an event with a place, and it lasts one tick', () => {
+    /* Both are over in the instant they occur and leave nothing behind to draw,
+       so without this the two events that matter most are the two you cannot
+       see. Instrumentation: nothing in the sim ever reads it. */
+    const sim = createSim('brimtoveharn');
+    let sawFracture = false;
+    let sawDeath = false;
+    let maxPerTick = 0;
+    for (let i = 0; i < 6000; i++) {
+      tick(sim, 1 / 60);
+      maxPerTick = Math.max(maxPerTick, sim.events.length);
+      for (const e of sim.events) {
+        expect(Number.isFinite(e.x)).toBe(true);
+        if (e.kind === 'fracture') sawFracture = true;
+        if (e.kind === 'death') sawDeath = true;
+      }
+      // exactly this tick's events, never an accumulating list
+      expect(sim.events.length).toBe(sim.fracturesThisTick + sim.deathsThisTick);
+    }
+    expect(sawFracture).toBe(true);
+    expect(sawDeath).toBe(true);
+    expect(maxPerTick).toBeGreaterThan(0);
+  });
+});
+
 describe('reset', () => {
   it('returns to a known state so a run can be driven from tick zero', () => {
     const sim = run('brimtoveharn', 2000);
