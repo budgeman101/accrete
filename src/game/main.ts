@@ -16,7 +16,7 @@
 */
 
 import '../kit/theme.css';
-import { Application, Assets, type Texture } from 'pixi.js';
+import { Application, Assets, Container, Text, type Texture } from 'pixi.js';
 
 import * as Audio from '../kit/audio.js';
 import { createCamera } from '../kit/camera.js';
@@ -148,13 +148,14 @@ async function boot() {
       const centre = overlay('center');
       centre.append(
         Object.assign(document.createElement('h1'), {
-          textContent: 'MOTES',
+          textContent: 'ACCRETE',
           style: 'font:600 34px/1.1 var(--kit-font);letter-spacing:.18em;margin:0;text-align:center',
         }),
         panel({
           title: null,
           children: [
             button({ label: 'Play', variant: 'primary', hotkey: 'enter', onClick: () => scenes.go('play') }),
+            button({ label: 'The experiment', hotkey: 'e', onClick: () => scenes.go('compare') }),
             button({ label: 'Settings', hotkey: 's', onClick: openSettings }),
             readout({ label: 'All time', value: String(store.data.totalLaps) }),
           ],
@@ -162,6 +163,131 @@ async function boot() {
       );
       ctx.el.append(centre);
     },
+  });
+
+  /* ── compare: the experiment, made watchable ─────────────────────────────
+     Nothing HAPPENS in the ambient world — 200,000 ticks and every gene sits at
+     mutation-drift balance. So the thing worth looking at is not the world, it
+     is the EXPERIMENT: the derivation says a uniform environment cannot hold a
+     niche, and this is that claim with a beginning and an end.
+
+     Two worlds, same seed, same everything except how far substrate spreads.
+     Each is seeded with two lineages: amber divides early and cheap, blue
+     divides late and rich. Left keeps its patches, right is smoothed. Watch the
+     minority hold on the left and get squeezed on the right. */
+  const PATCHY = 0.002;
+  const SMOOTH = 0.08;
+  scenes.add('compare', () => {
+    let a: Sim, b: Sim;
+    let va: View, vb: View;
+    let cam: ReturnType<typeof createCamera>;
+    let hud: { rTick: any; mA: any; mB: any };
+    let saved: Partial<typeof CFG> = {};
+
+    /* Both sims read the same global CFG, so they cannot hold different values
+       at once — they are ticked alternately with `diffuse` swapped between. Safe
+       because nothing caches it across a tick, and CFG is restored on exit. */
+    const withDiffuse = (d: number, fn: () => void) => { CFG.diffuse = d; fn(); };
+    const minority = (sim: Sim) => {
+      const n = sim.cells.length;
+      if (!n) return 0;
+      const early = sim.cells.filter((c) => c.genes.budThreshold < 0.7).length / n;
+      return Math.min(early, 1 - early);
+    };
+
+    return {
+      get sim() { return a; },
+      get cam() { return cam; },
+
+      enter(ctx: SceneContext) {
+        saved = { diffuse: CFG.diffuse, mutStickiness: CFG.mutStickiness, mutRatio: CFG.mutRatio };
+        CFG.mutStickiness = 0;   // mutation off: this measures competition, not drift
+        CFG.mutRatio = 0;
+
+        const seed = store.data.lastSeed || seedWord();
+        const half = (CFG.fieldSize * CFG.fieldCell) / 2;
+        const gap = half * 1.25;
+
+        a = createSim(seed);
+        b = createSim(seed);
+        for (const sim of [a, b]) {
+          sim.cells.forEach((c, i) => { c.genes.budThreshold = i % 2 ? 0.45 : 0.95; });
+        }
+
+        cam = createCamera(app, { minZoom: 0.05, maxZoom: 3 });
+        ctx.layer.addChild(cam.viewport);
+        cam.setZoom(0.34).moveTo(0, 0);
+
+        const left = new Container();
+        const right = new Container();
+        left.x = -gap;
+        right.x = gap;
+        cam.viewport.addChild(left, right);
+        va = createView(left, a, { colourBy: 'lineage' });
+        vb = createView(right, b, { colourBy: 'lineage' });
+
+        /* Labelled IN the world, not in the chrome: the two panels are the whole
+           point of the screen and a reader should never have to work out which
+           is which from a readout somewhere else. */
+        const label = (parent: Container, text: string, sub: string) => {
+          const t = new Text({
+            text: `${text}
+${sub}`,
+            style: { fill: 0xdfe6ee, fontSize: 46, fontFamily: 'monospace', align: 'center', lineHeight: 58 },
+          });
+          t.anchor.set(0.5, 1);
+          t.y = -half - 40;
+          parent.addChild(t);
+        };
+        label(left, 'PATCHY', 'substrate stays where it is');
+        label(right, 'SMOOTHED', 'substrate spreads out');
+
+        const rTick = readout({ label: 'Tick', value: '0' });
+        const mA = readout({ label: 'Patchy — minority', value: '50%' });
+        const mB = readout({ label: 'Smoothed — minority', value: '50%' });
+        const top = overlay('top-left', { row: true });
+        top.append(rTick, mA, mB, readout({ label: 'Seed', value: seed }));
+
+        const topRight = overlay('top-right', { row: true });
+        topRight.append(button({ label: 'Back', hotkey: 'escape', onClick: () => scenes.go('menu') }));
+
+        const note = panel({
+          title: 'What you are watching',
+          children: [
+            Object.assign(document.createElement('p'), {
+              textContent:
+                'Same seed, same rules. Two lineages: amber divides early and cheap, blue divides late and rich. '
+                + 'Only difference is how far substrate spreads — left keeps its patches, right is smoothed flat. '
+                + 'A uniform world cannot hold a niche, so the minority should be squeezed out on the right and hold on the left.',
+              style: 'margin:0;font:400 12px/1.5 var(--kit-font);opacity:.8;max-width:34ch',
+            }),
+          ],
+        });
+        const bottom = overlay('bottom-left');
+        bottom.append(note);
+
+        ctx.el.append(top, topRight, bottom);
+        hud = { rTick, mA, mB };
+      },
+
+      update(dt: number) {
+        withDiffuse(PATCHY, () => tick(a, dt));
+        withDiffuse(SMOOTH, () => tick(b, dt));
+        cam.update(dt);
+      },
+
+      render() {
+        va.render();
+        vb.render();
+        hud.rTick.set(a.tick);
+        hud.mA.set(`${(minority(a) * 100).toFixed(0)}%`);
+        hud.mB.set(`${(minority(b) * 100).toFixed(0)}%`);
+      },
+
+      exit() {
+        Object.assign(CFG, saved);
+      },
+    };
   });
 
   /* ── play ───────────────────────────────────────────────────────────────── */

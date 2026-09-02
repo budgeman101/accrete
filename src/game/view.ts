@@ -43,7 +43,15 @@ function hslHex(h: number, s: number, l: number): number {
 /** A fading mark left by something that happened. */
 interface Mark { x: number; y: number; kind: 'fracture' | 'death'; age: number }
 
-export function createView(parent: Container, sim: Sim) {
+export interface ViewOpts {
+  /** 'gene' colours by stickiness — the ambient view, heredity on the outside.
+      'lineage' colours by bud threshold, for the side-by-side experiment where
+      what matters is which of two lineages a cell belongs to. */
+  colourBy?: 'gene' | 'lineage';
+}
+
+export function createView(parent: Container, sim: Sim, opts: ViewOpts = {}) {
+  const colourBy = opts.colourBy ?? 'gene';
   const root = new Container();
   parent.addChild(root);
 
@@ -134,6 +142,16 @@ export function createView(parent: Container, sim: Sim) {
            between — so the population's genetics are legible at a glance and a
            drift in the gene is a drift in the colour of the world. */
         const stick = Math.max(0, Math.min(1, c.genes.stickiness));
+        if (colourBy === 'lineage') {
+          // two lineages, two hues, both well clear of the ground's green
+          const early = c.genes.budThreshold < 0.7;
+          const fedL = Math.max(0, Math.min(1, c.reserve / CFG.reserveMax));
+          cells.circle(c.x, c.y, c.r);
+          cells.fill({ color: hslHex(early ? 36 : 194, 72, 32 + fedL * 32), alpha: 0.97 });
+          cells.circle(c.x, c.y, c.r);
+          cells.stroke({ width: 1, color: 0x0d1116, alpha: 0.6 });
+          continue;
+        }
         /* 190 -> 335: cyan through blue and violet to pink. Deliberately a band
            the GROUND never occupies — the world is green, and an earlier version
            mapped stickiness across a range whose middle was also green, so cells
